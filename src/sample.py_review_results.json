@@ -1,0 +1,180 @@
+[
+  {
+    "file": "src/sample.py",
+    "findings": [
+      {
+        "type": "pylint",
+        "file": "src/sample.py",
+        "line": 1,
+        "column": 0,
+        "message": "Missing module docstring",
+        "severity": "convention",
+        "symbol": "missing-module-docstring"
+      },
+      {
+        "type": "pylint",
+        "file": "src/sample.py",
+        "line": 10,
+        "column": 0,
+        "message": "Missing function or method docstring",
+        "severity": "convention",
+        "symbol": "missing-function-docstring"
+      },
+      {
+        "type": "pylint",
+        "file": "src/sample.py",
+        "line": 18,
+        "column": 0,
+        "message": "Constant name \"password\" doesn't conform to UPPER_CASE naming style",
+        "severity": "convention",
+        "symbol": "invalid-name"
+      },
+      {
+        "type": "pylint",
+        "file": "src/sample.py",
+        "line": 22,
+        "column": 0,
+        "message": "Constant name \"unused_var\" doesn't conform to UPPER_CASE naming style",
+        "severity": "convention",
+        "symbol": "invalid-name"
+      },
+      {
+        "type": "pylint",
+        "file": "src/sample.py",
+        "line": 24,
+        "column": 0,
+        "message": "Missing function or method docstring",
+        "severity": "convention",
+        "symbol": "missing-function-docstring"
+      },
+      {
+        "type": "pylint",
+        "file": "src/sample.py",
+        "line": 24,
+        "column": 0,
+        "message": "Too many arguments (7/5)",
+        "severity": "refactor",
+        "symbol": "too-many-arguments"
+      },
+      {
+        "type": "pylint",
+        "file": "src/sample.py",
+        "line": 24,
+        "column": 0,
+        "message": "Too many positional arguments (7/5)",
+        "severity": "refactor",
+        "symbol": "too-many-positional-arguments"
+      },
+      {
+        "type": "pylint",
+        "file": "src/sample.py",
+        "line": 26,
+        "column": 4,
+        "message": "Too many nested blocks (7/5)",
+        "severity": "refactor",
+        "symbol": "too-many-nested-blocks"
+      },
+      {
+        "type": "flake8",
+        "file": "src/sample.py",
+        "line": 10,
+        "column": 1,
+        "message": "E302 expected 2 blank lines, found 1",
+        "severity": "warning"
+      },
+      {
+        "type": "flake8",
+        "file": "src/sample.py",
+        "line": 18,
+        "column": 1,
+        "message": "E305 expected 2 blank lines after class or function definition, found 1",
+        "severity": "warning"
+      },
+      {
+        "type": "flake8",
+        "file": "src/sample.py",
+        "line": 24,
+        "column": 1,
+        "message": "E302 expected 2 blank lines, found 1",
+        "severity": "warning"
+      },
+      {
+        "type": "flake8",
+        "file": "src/sample.py",
+        "line": 36,
+        "column": 1,
+        "message": "E305 expected 2 blank lines after class or function definition, found 1",
+        "severity": "warning"
+      },
+      {
+        "type": "bandit",
+        "file": "src/sample.py",
+        "line": 18,
+        "column": 1,
+        "message": "Possible hardcoded password: 'admin123'",
+        "severity": "low",
+        "confidence": "medium"
+      },
+      {
+        "type": "radon",
+        "file": "src/sample.py",
+        "line": 24,
+        "column": 1,
+        "message": "Complexity: function (score: 8)",
+        "severity": "warning",
+        "complexity_score": 8
+      },
+      {
+        "type": "radon",
+        "file": "src/sample.py",
+        "line": 1,
+        "column": 1,
+        "message": "Complexity: function (score: 3)",
+        "severity": "info",
+        "complexity_score": 3
+      },
+      {
+        "type": "radon",
+        "file": "src/sample.py",
+        "line": 10,
+        "column": 1,
+        "message": "Complexity: function (score: 3)",
+        "severity": "info",
+        "complexity_score": 3
+      }
+    ],
+    "timestamp": 1791499405.6666074,
+    "agent": "static_analysis"
+  },
+  {
+    "explanation": "",
+    "complex_sections": [],
+    "file": "src/sample.py",
+    "agent": "code_understanding",
+    "timestamp": 1791499418.0865495
+  },
+  {
+    "improvements": [],
+    "file": "src/sample.py",
+    "agent": "improvement_suggestion",
+    "timestamp": 1791499430.2183843
+  },
+  {
+    "tests": "",
+    "file": "src/sample.py",
+    "agent": "test_generator",
+    "timestamp": 1791499442.4939947
+  },
+  {
+    "documentation": "",
+    "file": "src/sample.py",
+    "agent": "documentation_agent",
+    "timestamp": 1791499455.0436194
+  },
+  {
+    "corrected_code": "\"\"\"Utility functions for mathematical operations and data processing.\"\"\"\n\nfrom __future__ import annotations\n\ndef calculate_factorial(n: int) -> int:\n    \"\"\"Calculate the factorial of a non\u2011negative integer.\n\n    Parameters\n    ----------\n    n : int\n        The number to calculate the factorial of. Must be non\u2011negative.\n\n    Returns\n    -------\n    int\n        The factorial of ``n``.\n\n    Raises\n    ------\n    ValueError\n        If ``n`` is negative.\n    \"\"\"\n    if n < 0:\n        raise ValueError(\"Factorial is not defined for negative numbers\")\n    result = 1\n    for i in range(1, n + 1):\n        result *= i\n    return result\n\n\ndef process_data(data: list[int]) -> list[int]:\n    \"\"\"Return a new list with all zero values removed.\n\n    Parameters\n    ----------\n    data : list[int]\n        The input list of integers.\n\n    Returns\n    -------\n    list[int]\n        A new list containing only the non\u2011zero elements of ``data``.\n    \"\"\"\n    return [item for item in data if item != 0]\n\n\ndef sum_positive_numbers(*numbers: int) -> int:\n    \"\"\"Return the sum of all positive numbers provided.\n\n    Parameters\n    ----------\n    *numbers : int\n        A variable number of integer arguments.\n\n    Returns\n    -------\n    int\n        The sum of all positive numbers.\n    \"\"\"\n    return sum(n for n in numbers if n > 0)\n\n\nif __name__ == \"__main__\":\n    print(calculate_factorial(5))",
+    "file": "src/sample.py",
+    "agent": "code_correction",
+    "timestamp": 1791499470.1842532
+  }
+]
