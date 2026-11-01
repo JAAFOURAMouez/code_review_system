@@ -1,0 +1,195 @@
+/* Horizon AI design system: tokens and base.
+   Direction: observability console. Charcoal surfaces, thin borders, restrained
+   violet (selection, focus, primary action) and cyan (live work, data).
+   Status is carried by shape AND colour, never colour alone. */
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --bg-0: #0d0f13; /* app background */
+  --bg-1: #13161b; /* panels */
+  --bg-2: #1a1e25; /* raised, hover */
+  --bg-3: #232833; /* selected, pressed */
+  --line: #272c36;
+  --line-strong: #363c4a;
+
+  /* Text. Contrast (WCAG) on --bg-1: text-1 14.9:1, text-2 7.9:1, text-3 5.9:1; on --bg-3: 12.2, 6.4, 4.8. */
+  --text-1: #e7e9ee;
+  --text-2: #a4abba;
+  --text-3: #8b94a5;
+
+  /* Accents */
+  --violet: #978af8; /* on bg-3: 5.1:1 */
+  --violet-strong: #6a59e6; /* white text on it: 5.0:1 */
+  --violet-wash: rgba(151, 138, 248, 0.14);
+  --cyan: #4cc9e0;
+  --cyan-wash: rgba(76, 201, 224, 0.12);
+
+  /* Semantic status */
+  --st-idle: #8b94a5;
+  --st-running: #4cc9e0;
+  --st-completed: #55c98a;
+  --st-blocked: #e3ae4a;
+  --st-failed: #f0706a;
+  --st-review: #978af8;
+  --st-ready: #978af8;
+  --st-backlog: #8b94a5;
+  --st-completed-wash: rgba(85, 201, 138, 0.12);
+  --st-blocked-wash: rgba(227, 174, 74, 0.13);
+  --st-failed-wash: rgba(240, 112, 106, 0.13);
+
+  /* Type */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  --fs-xs: 11.5px;
+  --fs-sm: 12.5px;
+  --fs-md: 13.5px;
+  --fs-lg: 15px;
+  --fs-xl: 18px;
+  --fs-2xl: 24px;
+  --lh: 1.45;
+
+  /* Space (4px base) */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+
+  /* Shape */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-pill: 999px;
+
+  /* Layout */
+  --sidebar-w: 252px;
+  --topbar-h: 48px;
+  --inspector-w: 400px;
+
+  /* Motion */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --t-fast: 120ms;
+  --t-med: 200ms;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-0);
+  color: var(--text-1);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  line-height: var(--lh);
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+}
+
+h1,
+h2,
+h3,
+h4,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: var(--fs-xl);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+h2 {
+  font-size: var(--fs-lg);
+  font-weight: 620;
+  letter-spacing: -0.005em;
+}
+h3 {
+  font-size: var(--fs-md);
+  font-weight: 620;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+a {
+  color: var(--violet);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+code,
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+:focus-visible {
+  outline: 2px solid var(--violet);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+::selection {
+  background: var(--violet-wash);
+}
+
+/* Thin, quiet scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 8px;
+  border: 2px solid var(--bg-0);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

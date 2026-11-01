@@ -1,5 +1,43 @@
 # Code Review & Improvement System
 
+## Dashboard (Horizon AI)
+
+A web dashboard for this pipeline lives in `frontend/`, served by `server.py` (standard library only).
+
+```bash
+pip install -r requirements.txt     # the agents' dependencies (once)
+python server.py                    # http://127.0.0.1:8787
+```
+
+Open the address, pick a file, press **Start review**. `server.py` runs the same agents as
+`orchestrator.py` (it imports `orchestrator.AGENTS` and `run_agent`, so the CLI and the dashboard
+behave identically) and shows each run live. Runs are stored in `.horizon/runs.json`.
+
+What the dashboard shows, and where it comes from:
+
+| Dashboard | Source |
+|---|---|
+| Agents, tasks, board | One task per agent per run. Status follows the real result: running, review (output received), blocked (failed) |
+| Failed | Process error, timeout, `"error": true` in the output, **or an empty result** (the LLM agents sometimes return `""` without flagging an error) |
+| Approve / Re-run | The only human actions: tick "a person has read the output", approve it, or re-run an agent |
+| Timeline "plan" | The per-agent timeout in `orchestrator.run_agent` (`AGENT_TIMEOUT`, default 120 s), one agent after another |
+| Memory | Linter findings are *stored* (tool output). Model explanations, suggestions and docs are *inferred*, with no confidence score because the agents do not report one |
+| Tokens and cost | Not shown: the agents do not return usage |
+
+Developing the front end: `cd frontend && npm install && npm run dev`, then open the dev server with
+`?api=http://127.0.0.1:8787` (keep `python server.py` running). `npm run build` refreshes
+`frontend/dist`, which `server.py` serves. Add `?demo` to any address to see the sample scenario.
+
+Tests: `python -m unittest discover tests` (backend, no API key needed).
+
+Putting it online for other people (each visitor brings their own Hugging Face key): see **DEPLOY.md**.
+
+Security: the server only accepts requests from `localhost`/`127.0.0.1`, refuses other origins, only
+reviews `.py` files inside this folder, and never serves `.env`. It has no login, so do not expose
+it. The model-based agents send the file's contents to the Hugging Face API configured in `.env`.
+
+---
+
 A multi-agent AI system for automated code review, analysis, and improvement suggestions.
 Built entirely with free LLMs (via Hugging Face Inference Providers or local Ollama) and free APIs.
 

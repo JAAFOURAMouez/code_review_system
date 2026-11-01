@@ -1,0 +1,15 @@
+# Render Blueprint: New > Blueprint, pick this repository. No secrets are needed:
+# every visitor brings their own Hugging Face key.
+services:
+  - type: web
+    name: horizon-code-review
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: HORIZON_MODE
+        value: public
+      - key: HORIZON_MAX_CONCURRENT_RUNS   # the free instance has little memory
+        value: "1"
+      - key: HORIZON_RUNS_PER_HOUR
+        value: "8"

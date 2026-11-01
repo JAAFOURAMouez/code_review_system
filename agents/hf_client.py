@@ -41,19 +41,44 @@ def generate_text(prompt: str, max_tokens: int = 500, temperature: float = 0.2, 
     Raises:
         Exception: If the API call fails for any reason
     """
-    try:
-        completion = client.chat.completions.create(
+    # Reasoning models (e.g. gpt-oss) spend part of max_tokens on hidden reasoning, so a small budget
+    # can leave the visible answer empty. Use at least HF_MIN_TOKENS (default 4000).
+    budget = max(max_tokens, int(os.getenv("HF_MIN_TOKENS", "2000")))
+    # gpt-oss style models accept a reasoning effort; "low" leaves far more of the budget for the
+    # visible answer. Set HF_REASONING_EFFORT= (empty) to disable, or to "medium"/"high".
+    effort = os.getenv("HF_REASONING_EFFORT", "low").strip()
+    extra = {"reasoning_effort": effort} if effort else None
+
+    def call(tokens: int):
+        nonlocal extra
+        kwargs = dict(
             model=HF_MODEL,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=tokens,
             temperature=temperature,
             top_p=top_p,
         )
-        return completion.choices[0].message.content
+        if extra:
+            try:
+                return client.chat.completions.create(**kwargs, extra_body=extra)
+            except Exception:
+                extra = None  # this model/provider does not accept it: stop sending it
+        return client.chat.completions.create(**kwargs)
+
+    try:
+        # A reply cut off by the limit (finish_reason == "length") is incomplete, e.g. tests that stop
+        # mid-function. Retry with a bigger budget (x2, then x4) before giving up.
+        for attempt in range(3):
+            choice = call(budget).choices[0]
+            text = choice.message.content
+            if choice.finish_reason != "length" and text and text.strip():
+                return text
+            if attempt < 2:
+                budget *= 2
+        raise ValueError(
+            f"the model reply was {'empty' if not (text and text.strip()) else 'cut off'} "
+            f"(finish_reason={choice.finish_reason}, max_tokens={budget}); "
+            "raise HF_MIN_TOKENS or use a non-reasoning HF_MODEL"
+        )
     except Exception as e:
         raise Exception(f"API call failed: {e}") from e

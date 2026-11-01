@@ -54,7 +54,8 @@ Code:
         return {
             "explanation": "Unable to generate explanation due to API connectivity issues. Please check your network connection and HF_API_TOKEN.",
             "complex_sections": [],
-            "error": True
+            "error": True,
+            "detail": str(e)
         }
 
 def parse_explanation_response(response: str) -> Dict[str, Any]:

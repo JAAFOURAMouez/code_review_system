@@ -51,6 +51,7 @@ Code:
         return {
             "tests": "",
             "error": True,
+            "detail": str(e),
             "note": "Unable to generate tests due to API connectivity issues. Please check your network connection and HF_API_TOKEN."
         }
 

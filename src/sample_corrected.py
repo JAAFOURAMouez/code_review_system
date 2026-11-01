@@ -1,9 +1,16 @@
-"""Utility functions for mathematical operations and data processing."""
+"""
+Utility functions for factorial calculation, data processing, and summation.
+"""
 
 from __future__ import annotations
 
+import os
+from typing import Iterable, List
+
+
 def calculate_factorial(n: int) -> int:
-    """Calculate the factorial of a non‑negative integer.
+    """
+    Calculate the factorial of a non‑negative integer.
 
     Parameters
     ----------
@@ -28,37 +35,48 @@ def calculate_factorial(n: int) -> int:
     return result
 
 
-def process_data(data: list[int]) -> list[int]:
-    """Return a new list with all zero values removed.
+def process_data(data: Iterable[int]) -> List[int]:
+    """
+    Return a new list with all zero values removed from the input iterable.
 
     Parameters
     ----------
-    data : list[int]
-        The input list of integers.
+    data : Iterable[int]
+        The input data sequence.
 
     Returns
     -------
-    list[int]
-        A new list containing only the non‑zero elements of ``data``.
+    List[int]
+        A list containing all non‑zero elements from ``data``.
     """
     return [item for item in data if item != 0]
 
 
-def sum_positive_numbers(*numbers: int) -> int:
-    """Return the sum of all positive numbers provided.
-
-    Parameters
-    ----------
-    *numbers : int
-        A variable number of integer arguments.
+def get_password() -> str:
+    """
+    Retrieve the application password from the environment.
 
     Returns
     -------
-    int
-        The sum of all positive numbers.
+    str
+        The password value.
+
+    Raises
+    ------
+    KeyError
+        If the environment variable ``APP_PASSWORD`` is not set.
     """
-    return sum(n for n in numbers if n > 0)
+    return os.environ["APP_PASSWORD"]
 
 
-if __name__ == "__main__":
-    print(calculate_factorial(5))
+API_KEY = "sk-1234567890abcdef"
+
+__all__ = [
+    "calculate_factorial",
+    "process_data",
+    "get_password",
+    "API_KEY",
+]
+
+
+def complex_function(*numbers: int

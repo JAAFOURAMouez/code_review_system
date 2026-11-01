@@ -143,7 +143,7 @@
         "complexity_score": 3
       }
     ],
-    "timestamp": 1791499405.6666074,
+    "timestamp": 1791577567.2561815,
     "agent": "static_analysis"
   },
   {
@@ -151,30 +151,30 @@
     "complex_sections": [],
     "file": "src/sample.py",
     "agent": "code_understanding",
-    "timestamp": 1791499418.0865495
+    "timestamp": 1791577587.1290305
   },
   {
     "improvements": [],
     "file": "src/sample.py",
     "agent": "improvement_suggestion",
-    "timestamp": 1791499430.2183843
+    "timestamp": 1791577600.4146512
   },
   {
     "tests": "",
     "file": "src/sample.py",
     "agent": "test_generator",
-    "timestamp": 1791499442.4939947
+    "timestamp": 1791577612.6976194
   },
   {
-    "documentation": "",
+    "documentation": "**Overview**\n\nThe module demonstrates basic Python functions and highlights common pitfalls such as modifying a list while iterating, hard\u2011coded credentials, and functions with too many parameters. It includes:\n\n- `calculate_factorial(n)`: Computes the factorial of a non\u2011negative integer.\n- `process_data(data)`: Attempts to remove zeros from a list but contains a bug.\n- `complex_function(a, b, c, d, e, f, g)`: Adds seven positive numbers but is overly nested and hard to maintain.\n- Global constants `password` and `API_KEY` (illustrating a security issue).\n- An unused variable `unused_var`.\n\nThe script prints the factorial of 5 when executed as the main program.\n\n---\n\n### Function Documentation\n\n```python\ndef calculate_factorial(n):\n    \"\"\"\n    Calculate the factorial of a non\u2011negative integer.\n\n    Parameters\n    ----------\n    n : int\n        The number to compute the factorial of. Must be >= 0.\n\n    Returns\n    -------\n    int\n        The factorial of `n`.\n\n    Raises\n    ------\n    ValueError\n        If `n` is negative.\n\n    Examples\n    --------\n    >>> calculate_factorial(5)\n    120",
     "file": "src/sample.py",
     "agent": "documentation_agent",
-    "timestamp": 1791499455.0436194
+    "timestamp": 1791577625.5738273
   },
   {
-    "corrected_code": "\"\"\"Utility functions for mathematical operations and data processing.\"\"\"\n\nfrom __future__ import annotations\n\ndef calculate_factorial(n: int) -> int:\n    \"\"\"Calculate the factorial of a non\u2011negative integer.\n\n    Parameters\n    ----------\n    n : int\n        The number to calculate the factorial of. Must be non\u2011negative.\n\n    Returns\n    -------\n    int\n        The factorial of ``n``.\n\n    Raises\n    ------\n    ValueError\n        If ``n`` is negative.\n    \"\"\"\n    if n < 0:\n        raise ValueError(\"Factorial is not defined for negative numbers\")\n    result = 1\n    for i in range(1, n + 1):\n        result *= i\n    return result\n\n\ndef process_data(data: list[int]) -> list[int]:\n    \"\"\"Return a new list with all zero values removed.\n\n    Parameters\n    ----------\n    data : list[int]\n        The input list of integers.\n\n    Returns\n    -------\n    list[int]\n        A new list containing only the non\u2011zero elements of ``data``.\n    \"\"\"\n    return [item for item in data if item != 0]\n\n\ndef sum_positive_numbers(*numbers: int) -> int:\n    \"\"\"Return the sum of all positive numbers provided.\n\n    Parameters\n    ----------\n    *numbers : int\n        A variable number of integer arguments.\n\n    Returns\n    -------\n    int\n        The sum of all positive numbers.\n    \"\"\"\n    return sum(n for n in numbers if n > 0)\n\n\nif __name__ == \"__main__\":\n    print(calculate_factorial(5))",
+    "corrected_code": "\"\"\"\nUtility functions for factorial calculation, data processing, and summation.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport os\nfrom typing import Iterable, List\n\n\ndef calculate_factorial(n: int) -> int:\n    \"\"\"\n    Calculate the factorial of a non\u2011negative integer.\n\n    Parameters\n    ----------\n    n : int\n        The number to calculate the factorial of. Must be non\u2011negative.\n\n    Returns\n    -------\n    int\n        The factorial of ``n``.\n\n    Raises\n    ------\n    ValueError\n        If ``n`` is negative.\n    \"\"\"\n    if n < 0:\n        raise ValueError(\"Factorial is not defined for negative numbers\")\n    result = 1\n    for i in range(1, n + 1):\n        result *= i\n    return result\n\n\ndef process_data(data: Iterable[int]) -> List[int]:\n    \"\"\"\n    Return a new list with all zero values removed from the input iterable.\n\n    Parameters\n    ----------\n    data : Iterable[int]\n        The input data sequence.\n\n    Returns\n    -------\n    List[int]\n        A list containing all non\u2011zero elements from ``data``.\n    \"\"\"\n    return [item for item in data if item != 0]\n\n\ndef get_password() -> str:\n    \"\"\"\n    Retrieve the application password from the environment.\n\n    Returns\n    -------\n    str\n        The password value.\n\n    Raises\n    ------\n    KeyError\n        If the environment variable ``APP_PASSWORD`` is not set.\n    \"\"\"\n    return os.environ[\"APP_PASSWORD\"]\n\n\nAPI_KEY = \"sk-1234567890abcdef\"\n\n__all__ = [\n    \"calculate_factorial\",\n    \"process_data\",\n    \"get_password\",\n    \"API_KEY\",\n]\n\n\ndef complex_function(*numbers: int",
     "file": "src/sample.py",
     "agent": "code_correction",
-    "timestamp": 1791499470.1842532
+    "timestamp": 1791577640.9887497
   }
 ]

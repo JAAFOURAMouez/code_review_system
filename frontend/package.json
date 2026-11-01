@@ -1,0 +1,29 @@
+{
+  "name": "horizon-ai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Horizon AI: control center for long-horizon, multi-agent work (demo data, no execution backend).",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck:offline": "tsc --noEmit -p tsconfig.offline.json",
+    "format": "prettier --write .",
+    "lint": "npm run typecheck && prettier --check .",
+    "test": "tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "esbuild": "^0.28.0",
+    "prettier": "^3.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

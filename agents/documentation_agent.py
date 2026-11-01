@@ -51,6 +51,7 @@ Code:
         return {
             "documentation": "",
             "error": True,
+            "detail": str(e),
             "note": "Unable to generate documentation due to API connectivity issues. Please check your network connection and HF_API_TOKEN."
         }
 

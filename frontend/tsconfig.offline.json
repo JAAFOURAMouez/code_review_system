@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "typeRoots": ["/opt/npm-tools/node_modules/@types"]
+  },
+  "include": ["src", "tests", "types"]
+}

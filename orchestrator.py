@@ -53,14 +53,15 @@ AGENTS = [
     }
 ]
 
-def run_agent(agent: Dict[str, str], file_path: str) -> Dict[str, Any]:
+def run_agent(agent: Dict[str, str], file_path: str, env: Dict[str, str] = None) -> Dict[str, Any]:
     """Run a single agent and return its output."""
     try:
         result = subprocess.run(
             [get_python_executable(), agent["script"], file_path],
             capture_output=True,
             text=True,
-            timeout=60
+            timeout=int(os.getenv("AGENT_TIMEOUT", "120")),
+            env=env  # None = inherit this process's environment (the CLI default)
         )
         if result.returncode == 0:
             # Try to parse JSON output

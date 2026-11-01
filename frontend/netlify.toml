@@ -1,0 +1,15 @@
+# Optional: host only the front end on Netlify, with the backend elsewhere (see ../DEPLOY.md).
+# Set HORIZON_API_URL in Netlify's environment variables to your backend's address, e.g.
+# https://horizon-code-review.onrender.com  (no trailing slash). Leave it unset for the demo-only site.
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "no-referrer"

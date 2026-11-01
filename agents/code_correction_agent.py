@@ -73,6 +73,7 @@ Code:
         return {
             "corrected_code": "",
             "error": True,
+            "detail": str(e),
             "note": "Unable to generate corrected code due to API connectivity issues. Please check your network connection and HF_API_TOKEN."
         }
 

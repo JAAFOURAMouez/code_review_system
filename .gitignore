@@ -74,3 +74,25 @@ Thumbs.db
 
 # Local settings
 config.json
+# Horizon dashboard
+.horizon/
+frontend/node_modules/
+DEPLOY.md
+
+# Frontend dependencies and build
+frontend/node_modules/
+frontend/dist/
+frontend/.dev
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Environment variables
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
