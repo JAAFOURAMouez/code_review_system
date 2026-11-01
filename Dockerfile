@@ -21,7 +21,7 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY orchestrator.py server.py horizon_adapter.py config.json ./
+COPY orchestrator.py server.py horizon_adapter.py ./
 COPY agents/ agents/
 COPY --from=web /web/dist frontend/dist
 # Run as an unprivileged user; it only needs to write its own session data.
