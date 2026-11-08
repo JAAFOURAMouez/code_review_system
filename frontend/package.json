@@ -3,12 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Horizon AI: control center for long-horizon, multi-agent work (demo data, no execution backend).",
+  "description": "Horizon AI: dashboard for the code review agents (results, orchestration, history).",
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "typecheck:offline": "tsc --noEmit -p tsconfig.offline.json",
     "format": "prettier --write .",
     "lint": "npm run typecheck && prettier --check .",
     "test": "tsx --test tests/*.test.ts"

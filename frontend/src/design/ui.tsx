@@ -1,43 +1,23 @@
-import { useEffect, useRef, type ReactNode } from 'react'
-import {
-  TASK_STATUS_LABEL,
-  type AgentState,
-  type Priority,
-  type Task,
-  type TaskStatus,
-} from '../domain/types.ts'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { store, useApp } from '../state/store.ts'
+import type { AgentStatus, Outcome } from '../types.ts'
 
 // ------------------------------------------------------------------ icons
 
 const ICONS = {
-  overview: (
+  results: (
     <>
-      <rect x="3" y="3" width="7" height="9" rx="1.5" />
-      <rect x="14" y="3" width="7" height="5" rx="1.5" />
-      <rect x="14" y="12" width="7" height="9" rx="1.5" />
-      <rect x="3" y="16" width="7" height="5" rx="1.5" />
+      <rect x="4" y="3" width="16" height="18" rx="2" />
+      <path d="M8 8h8M8 12h8M8 16h5" />
     </>
   ),
   graph: (
     <>
-      <circle cx="5" cy="6" r="2.2" />
-      <circle cx="19" cy="6" r="2.2" />
-      <circle cx="12" cy="18" r="2.2" />
-      <path d="M7 6.8 17 6.8M6 8 11 16M18 8 13 16" />
-    </>
-  ),
-  tasks: (
-    <>
-      <rect x="3" y="4" width="5" height="16" rx="1.2" />
-      <rect x="10" y="4" width="5" height="10" rx="1.2" />
-      <rect x="17" y="4" width="4" height="13" rx="1.2" />
-    </>
-  ),
-  memory: (
-    <>
-      <ellipse cx="12" cy="6" rx="8" ry="3" />
-      <path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" />
+      <circle cx="5" cy="12" r="2.2" />
+      <circle cx="19" cy="5" r="2.2" />
+      <circle cx="19" cy="12" r="2.2" />
+      <circle cx="19" cy="19" r="2.2" />
+      <path d="M7.2 12H16.8M7 11 16.9 5.8M7 13l9.9 5.2" />
     </>
   ),
   history: (
@@ -46,60 +26,25 @@ const ICONS = {
       <path d="M3 3v5h5M12 7v5l3 2" />
     </>
   ),
-  evaluation: <path d="M3 20V10M9 20V4M15 20v-7M21 20V8" />,
   settings: (
     <>
       <circle cx="12" cy="12" r="3" />
       <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1" />
     </>
   ),
-  search: (
-    <>
-      <circle cx="11" cy="11" r="6.5" />
-      <path d="m20 20-4.2-4.2" />
-    </>
-  ),
-  bell: <path d="M6 9a6 6 0 1 1 12 0c0 6 2.5 7 2.5 7h-17S6 15 6 9ZM10 20a2 2 0 0 0 4 0" />,
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,
   x: <path d="m6 6 12 12M18 6 6 18" />,
-  chevronRight: <path d="m9 6 6 6-6 6" />,
-  chevronDown: <path d="m6 9 6 6 6-6" />,
-  plus: <path d="M12 5v14M5 12h14" />,
-  minus: <path d="M5 12h14" />,
-  fit: <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />,
-  alert: (
-    <>
-      <path d="M12 3 2.5 20h19L12 3Z" />
-      <path d="M12 10v4.5M12 17.5v.01" />
-    </>
-  ),
   check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
-  user: (
-    <>
-      <circle cx="12" cy="8" r="3.5" />
-      <path d="M5 20c.8-3.6 3.4-5.5 7-5.5s6.2 1.9 7 5.5" />
-    </>
-  ),
   refresh: (
     <path d="M20 11a8 8 0 0 0-14.5-3.5L4 9M4 4v5h5M4 13a8 8 0 0 0 14.5 3.5L20 15M20 20v-5h-5" />
   ),
-  link: (
-    <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1-1" />
-  ),
-  info: (
+  copy: (
     <>
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 11v5M12 8v.01" />
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15V6a2 2 0 0 1 2-2h8" />
     </>
   ),
-  pause: <path d="M8 5v14M16 5v14" />,
-  play: <path d="M7 5v14l12-7L7 5Z" />,
-  lock: (
-    <>
-      <rect x="5" y="11" width="14" height="9" rx="2" />
-      <path d="M8 11V8a4 4 0 0 1 8 0v3" />
-    </>
-  ),
+  download: <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />,
 } as const
 
 export type IconName = keyof typeof ICONS
@@ -125,29 +70,23 @@ export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
 
 // ----------------------------------------------------------- status glyphs
 
-export type GlyphKind = AgentState | TaskStatus
+export type StatusKind = AgentStatus | 'partial'
 
-const GLYPH_COLOR: Record<GlyphKind, string> = {
-  idle: 'var(--st-idle)',
+const KIND_COLOR: Record<StatusKind, string> = {
+  pending: 'var(--st-idle)',
   running: 'var(--st-running)',
-  completed: 'var(--st-completed)',
-  blocked: 'var(--st-blocked)',
+  ok: 'var(--st-completed)',
   failed: 'var(--st-failed)',
-  backlog: 'var(--st-backlog)',
-  ready: 'var(--st-ready)',
-  review: 'var(--st-review)',
+  partial: 'var(--st-blocked)',
 }
 
-/** Shape encodes status, colour reinforces it, so it reads without colour. */
-export function Glyph({ kind, size = 14 }: { kind: GlyphKind; size?: number }) {
-  const c = GLYPH_COLOR[kind]
+/** Shape encodes status and colour reinforces it, so it reads without colour. */
+export function Glyph({ kind, size = 14 }: { kind: StatusKind; size?: number }) {
+  const c = KIND_COLOR[kind]
   const ink = 'var(--bg-0)'
   let body: ReactNode
   switch (kind) {
-    case 'idle':
-      body = <circle cx="7" cy="7" r="5" fill="none" stroke={c} strokeWidth="1.6" />
-      break
-    case 'backlog':
+    case 'pending':
       body = (
         <circle
           cx="7"
@@ -160,9 +99,6 @@ export function Glyph({ kind, size = 14 }: { kind: GlyphKind; size?: number }) {
         />
       )
       break
-    case 'ready':
-      body = <circle cx="7" cy="7" r="5" fill="none" stroke={c} strokeWidth="1.6" />
-      break
     case 'running':
       body = (
         <>
@@ -171,15 +107,7 @@ export function Glyph({ kind, size = 14 }: { kind: GlyphKind; size?: number }) {
         </>
       )
       break
-    case 'review':
-      body = (
-        <>
-          <circle cx="7" cy="7" r="5" fill="none" stroke={c} strokeWidth="1.6" />
-          <path d="M7 7V3.9A3.1 3.1 0 1 1 3.9 7Z" fill={c} />
-        </>
-      )
-      break
-    case 'completed':
+    case 'ok':
       body = (
         <>
           <circle cx="7" cy="7" r="6" fill={c} />
@@ -194,11 +122,11 @@ export function Glyph({ kind, size = 14 }: { kind: GlyphKind; size?: number }) {
         </>
       )
       break
-    case 'blocked':
+    case 'partial':
       body = (
         <>
           <rect x="1.2" y="1.2" width="11.6" height="11.6" rx="2.4" fill={c} />
-          <path d="M5.3 4.6v4.8M8.7 4.6v4.8" stroke={ink} strokeWidth="1.5" strokeLinecap="round" />
+          <path d="M4.5 7h5" stroke={ink} strokeWidth="1.6" strokeLinecap="round" />
         </>
       )
       break
@@ -230,194 +158,100 @@ export function Glyph({ kind, size = 14 }: { kind: GlyphKind; size?: number }) {
   )
 }
 
-const STATE_LABEL: Record<GlyphKind, string> = {
-  idle: 'Idle',
+export const AGENT_STATUS_LABEL: Record<AgentStatus, string> = {
+  pending: 'Waiting',
   running: 'Running',
-  completed: 'Completed',
-  blocked: 'Blocked',
+  ok: 'Done',
   failed: 'Failed',
-  backlog: 'Backlog',
-  ready: 'Ready',
-  review: 'Review',
 }
 
-export function StateBadge({ kind, label }: { kind: GlyphKind; label?: string }) {
+export const OUTCOME_LABEL: Record<Outcome, string> = {
+  in_progress: 'In progress',
+  succeeded: 'Succeeded',
+  partial: 'Partly failed',
+  failed: 'Failed',
+}
+
+export function outcomeKind(outcome: Outcome): StatusKind {
+  return outcome === 'in_progress'
+    ? 'running'
+    : outcome === 'succeeded'
+      ? 'ok'
+      : outcome === 'partial'
+        ? 'partial'
+        : 'failed'
+}
+
+export function StatusBadge({ kind, label }: { kind: StatusKind; label: string }) {
   return (
     <span className={`badge badge--${kind}`}>
       <Glyph kind={kind} />
-      {label ?? STATE_LABEL[kind]}
+      {label}
     </span>
   )
 }
 
-/** A task's visual state: blocked-by-failure reads as failed. */
-export function taskGlyphKind(task: Pick<Task, 'status' | 'blocked'>): GlyphKind {
-  return task.status === 'blocked' && task.blocked?.kind === 'failure' ? 'failed' : task.status
+export function OutcomeBadge({ outcome }: { outcome: Outcome }) {
+  return <StatusBadge kind={outcomeKind(outcome)} label={OUTCOME_LABEL[outcome]} />
 }
 
-export function TaskStateBadge({ task }: { task: Task }) {
-  const kind = taskGlyphKind(task)
-  const label = kind === 'failed' ? 'Blocked: failed' : TASK_STATUS_LABEL[task.status]
-  return <StateBadge kind={kind} label={label} />
-}
+// ----------------------------------------------------------------- small pieces
 
-const PRIORITY_LABEL: Record<Priority, string> = {
-  critical: 'Critical',
-  high: 'High',
-  medium: 'Medium',
-  low: 'Low',
-}
-
-export function PriorityMark({ priority }: { priority: Priority }) {
+export function Empty({ title, children }: { title: string; children?: ReactNode }) {
   return (
-    <span className={`prio prio--${priority}`} title={`${PRIORITY_LABEL[priority]} priority`}>
-      <i aria-hidden="true">
-        <b />
-        <b />
-        <b />
-      </i>
-      {PRIORITY_LABEL[priority]}
-    </span>
-  )
-}
-
-// ---------------------------------------------------------------- controls
-
-export function Meter({
-  value,
-  tone,
-  small,
-  label,
-}: {
-  value: number
-  tone?: 'ok' | 'violet'
-  small?: boolean
-  label: string
-}) {
-  const v = Math.max(0, Math.min(100, value))
-  return (
-    <div
-      className={`meter${tone ? ` meter--${tone}` : ''}${small ? ' meter--sm' : ''}`}
-      role="progressbar"
-      aria-label={label}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={Math.round(v)}
-    >
-      <span style={{ width: `${v}%` }} />
-    </div>
-  )
-}
-
-export function Segmented<T extends string>({
-  value,
-  options,
-  onChange,
-  label,
-}: {
-  value: T
-  options: { value: T; label: string }[]
-  onChange: (v: T) => void
-  label: string
-}) {
-  return (
-    <div className="seg" role="group" aria-label={label}>
-      {options.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          aria-pressed={o.value === value}
-          onClick={() => onChange(o.value)}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-export function Switch({
-  checked,
-  onChange,
-  label,
-}: {
-  checked: boolean
-  onChange: (v: boolean) => void
-  label: string
-}) {
-  return (
-    <button
-      type="button"
-      className="switch"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      onClick={() => onChange(!checked)}
-    />
-  )
-}
-
-export function SearchInput({
-  value,
-  onChange,
-  placeholder,
-  label,
-}: {
-  value: string
-  onChange: (v: string) => void
-  placeholder: string
-  label: string
-}) {
-  return (
-    <div className="search">
-      <Icon name="search" size={14} />
-      <input
-        className="input"
-        type="search"
-        value={value}
-        placeholder={placeholder}
-        aria-label={label}
-        onChange={(e: { target: { value: string } }) => onChange(e.target.value)}
-      />
-    </div>
-  )
-}
-
-export function Empty({
-  title,
-  children,
-  action,
-  center,
-}: {
-  title: string
-  children?: ReactNode
-  action?: ReactNode
-  center?: boolean
-}) {
-  return (
-    <div className={`empty${center ? ' empty--center' : ''}`}>
+    <div className="empty">
       <h3>{title}</h3>
       {children && <p>{children}</p>}
-      {action}
     </div>
-  )
-}
-
-export function DemoTag({ children = 'Demo data' }: { children?: ReactNode }) {
-  const { repoKind } = useApp()
-  if (repoKind === 'live') return null
-  return (
-    <span
-      className="demo-tag"
-      title="Sample data generated in this browser, not a measurement of a real system."
-    >
-      {children}
-    </span>
   )
 }
 
 export function Spinner({ label = 'Loading' }: { label?: string }) {
   return <div className="spinner" role="status" aria-label={label} />
+}
+
+/** A block of code with Copy and Download buttons. */
+export function CodeBlock({ code, filename }: { code: string; filename?: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      store.toast('error', 'The browser did not allow copying. Select the text instead.')
+    }
+  }
+  const download = () => {
+    const url = URL.createObjectURL(new Blob([code], { type: 'text/x-python' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename ?? 'code.py'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+  return (
+    <div className="codeblock">
+      <div className="codeblock__bar">
+        {filename && <span className="mono codeblock__name">{filename}</span>}
+        <span className="codeblock__actions">
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => void copy()}>
+            <Icon name={copied ? 'check' : 'copy'} size={14} />
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+          {filename && (
+            <button type="button" className="btn btn--ghost btn--sm" onClick={download}>
+              <Icon name="download" size={14} />
+              Download
+            </button>
+          )}
+        </span>
+      </div>
+      <pre className="codeblock__code">
+        <code>{code}</code>
+      </pre>
+    </div>
+  )
 }
 
 // ----------------------------------------------------------------- toasts

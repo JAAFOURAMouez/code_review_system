@@ -5,21 +5,15 @@ import { store, useApp } from '../state/store.ts'
 import { FirstRun } from './Landing.tsx'
 import { Sidebar } from './Sidebar.tsx'
 import { TopBar } from './TopBar.tsx'
-import { Evaluation } from '../views/Evaluation.tsx'
 import { History } from '../views/History.tsx'
-import { Memory } from '../views/Memory.tsx'
 import { Orchestration } from '../views/Orchestration.tsx'
-import { Overview } from '../views/Overview.tsx'
+import { Results } from '../views/Results.tsx'
 import { Settings } from '../views/Settings.tsx'
-import { Tasks } from '../views/Tasks.tsx'
 
-const VIEW_TITLE: Record<ViewId, string> = {
-  overview: 'Overview',
-  orchestration: 'Agent Orchestration',
-  tasks: 'Tasks & Planning',
-  memory: 'Persistent Memory',
-  history: 'Execution History',
-  evaluation: 'Evaluation & Reliability',
+export const VIEW_TITLE: Record<ViewId, string> = {
+  results: 'Results',
+  orchestration: 'Orchestration',
+  history: 'History',
   settings: 'Settings',
 }
 
@@ -57,29 +51,23 @@ class ViewBoundary extends Component<
 
 function CurrentView({ view }: { view: ViewId }) {
   switch (view) {
-    case 'overview':
-      return <Overview />
+    case 'results':
+      return <Results />
     case 'orchestration':
       return <Orchestration />
-    case 'tasks':
-      return <Tasks />
-    case 'memory':
-      return <Memory />
     case 'history':
       return <History />
-    case 'evaluation':
-      return <Evaluation />
     case 'settings':
       return <Settings />
   }
 }
 
 export function App() {
-  const { status, error, ws, repoKind } = useApp()
-  if (status === 'loading') return <LoadingScreen />
+  const { status, error, ws } = useApp()
   if (status === 'error') return <ErrorScreen message={error ?? 'Unknown error'} />
-  // A live backend starts empty: there is nothing to show until the first review exists.
-  if (repoKind === 'live' && ws && ws.runs.length === 0) return <FirstRun />
+  if (status === 'loading' || !ws) return <LoadingScreen />
+  // Before the first review there is nothing to show but the landing page.
+  if (ws.runs.length === 0) return <FirstRun />
   return <Shell />
 }
 
@@ -121,16 +109,11 @@ function LoadingScreen() {
   return (
     <div className="boot" aria-busy="true">
       <div className="boot__card">
-        <Spinner label="Loading workspace" />
+        <Spinner label="Loading" />
         <div>
-          <h2>Loading workspace</h2>
-          <p className="muted">Fetching agents, tasks and run history.</p>
+          <h2>Connecting to the review server</h2>
+          <p className="muted">Loading your reviews.</p>
         </div>
-      </div>
-      <div className="boot__skeleton" aria-hidden="true">
-        <div className="skeleton" style={{ height: 14, width: '40%' }} />
-        <div className="skeleton" style={{ height: 14, width: '70%' }} />
-        <div className="skeleton" style={{ height: 14, width: '55%' }} />
       </div>
     </div>
   )
@@ -141,7 +124,7 @@ function ErrorScreen({ message }: { message: string }) {
     <div className="boot">
       <div className="boot__card boot__card--error" role="alert">
         <div>
-          <h2>Couldn’t load the workspace</h2>
+          <h2>Can’t reach the review server</h2>
           <p className="muted">{message}</p>
           <div className="boot__actions">
             <button type="button" className="btn btn--primary" onClick={() => void store.load()}>

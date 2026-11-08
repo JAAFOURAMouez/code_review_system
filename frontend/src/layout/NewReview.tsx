@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Spinner, useDismiss } from '../design/ui.tsx'
-import { getCredentials } from '../state/credentials.ts'
+import { getCredentials } from '../credentials.ts'
+import { navigate } from '../state/router.ts'
 import { store, useApp } from '../state/store.ts'
 
 const MAX_CODE_BYTES = 100_000
@@ -107,7 +108,7 @@ export function ReviewForm({ onStarted }: { onStarted?: () => void }) {
   const [name, setName] = useState('snippet.py')
   const [loadError, setLoadError] = useState<string>()
   const [starting, setStarting] = useState(false)
-  const reviewing = !!ws?.tasks.some((t) => t.status === 'running')
+  const reviewing = ws?.current?.outcome === 'in_progress'
 
   useEffect(() => {
     if (upload) return
@@ -258,7 +259,7 @@ export function NewReview() {
         aria-haspopup="dialog"
         onClick={() => setOpen(!open)}
       >
-        Run review
+        New review
       </button>
       {open && (
         <div className="pop pop--review" role="dialog" aria-label="Start a review">
@@ -266,7 +267,12 @@ export function NewReview() {
             <h3>Start a review</h3>
           </div>
           <div className="pop__body">
-            <ReviewForm onStarted={() => setOpen(false)} />
+            <ReviewForm
+              onStarted={() => {
+                setOpen(false)
+                navigate('results')
+              }}
+            />
           </div>
         </div>
       )}

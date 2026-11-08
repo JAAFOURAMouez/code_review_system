@@ -73,48 +73,41 @@ class WorkspaceTests(unittest.TestCase):
     def build(self, statuses):
         return ad.build_workspace([make_run(statuses)], self.names, "m", 5000)
 
-    def test_task_status_follows_agent_status(self):
+    def test_current_run_shows_each_agent_status_and_result(self):
         ws = self.build({"static_analysis": "ok", "code_understanding": "failed", "test_generator": "running"})
-        by_agent = {t["assigneeId"]: t for t in ws["tasks"]}
-        self.assertEqual(by_agent["static_analysis"]["status"], "review")
-        self.assertEqual(by_agent["code_understanding"]["status"], "blocked")
-        self.assertEqual(by_agent["code_understanding"]["blocked"]["kind"], "failure")
-        self.assertEqual(by_agent["test_generator"]["status"], "running")
-        self.assertEqual(by_agent["improvement_suggestion"]["status"], "backlog")
-        self.assertEqual(ws["runs"][0]["outcome"], "in_progress")
-        self.assertEqual([t["id"] for t in ws["tasks"]][:2], ["T2.1", "T2.2"])
+        cur = ws["current"]["agents"]
+        self.assertEqual(cur["static_analysis"]["status"], "ok")
+        self.assertEqual(cur["static_analysis"]["result"]["findings"][0]["type"], "pylint")
+        self.assertEqual((cur["code_understanding"]["status"], cur["code_understanding"]["problem"]),
+                         ("failed", "API down"))
+        self.assertEqual(cur["test_generator"]["status"], "running")
+        self.assertIsNone(cur["test_generator"]["result"])
+        self.assertEqual(cur["improvement_suggestion"]["status"], "pending")
+        self.assertEqual(ws["current"]["outcome"], "in_progress")
+        self.assertEqual([cur[n]["taskId"] for n in self.names][:2], ["T2.1", "T2.2"])
+        self.assertEqual(cur["static_analysis"]["durationMs"], 1000)
 
-    def test_no_invented_dependencies_or_tokens(self):
-        ws = self.build({n: "ok" for n in self.names})
-        self.assertTrue(all(t["dependsOn"] == [] for t in ws["tasks"]))
-        self.assertFalse(ws["capabilities"]["tokens"])
-        self.assertEqual(set(ws["capabilities"]["transitions"]), {"review>completed", "review>running", "blocked>running"})
-        self.assertEqual(ws["runs"][0]["outcome"], "succeeded")
-
-    def test_memory_marks_tool_output_stored_and_model_output_inferred_without_confidence(self):
-        ws = self.build({n: "ok" for n in self.names})
-        mem = {m["id"]: m for m in ws["memories"]}
-        self.assertEqual(mem["run-002-pylint"]["origin"], "stored")
-        self.assertEqual(mem["run-002-flake8"]["provenance"]["sourceType"], "tool_output")
-        for mid in ("run-002-explanation", "run-002-improvements", "run-002-documentation"):
-            self.assertEqual(mem[mid]["origin"], "inferred")
-            self.assertNotIn("confidence", mem[mid])
-            self.assertEqual(mem[mid]["derivedFrom"], ["run-002-file"])
-        for m in mem.values():
-            for link in m["links"]:
-                self.assertIn(link["to"], mem)
-
-    def test_agent_output_is_readable_and_fences_are_stripped(self):
+    def test_results_hide_process_details_and_paths(self):
         run = make_run({n: "ok" for n in self.names})
-        run["agents"]["code_correction"]["result"] = {"corrected_code": "```python\nprint(1)\n```"}
+        run["agents"]["code_correction"]["result"] = {
+            "corrected_code": "print(1)\n", "file": "/srv/secret/path.py", "stderr": "trace",
+            "verification": {"accepted": True}}
         ws = ad.build_workspace([run], self.names, "m", 5000)
-        out = {t["assigneeId"]: t.get("output") for t in ws["tasks"]}
-        self.assertEqual(out["code_correction"], {"kind": "code", "text": "print(1)", "filename": "a_corrected.py"})
-        self.assertIn("pylint", out["static_analysis"]["text"])
-        self.assertIn("Adds numbers.", out["code_understanding"]["text"])
-        self.assertEqual(out["test_generator"]["filename"], "test_a.py")
-        failed = ad.build_workspace([make_run({"test_generator": "failed"})], self.names, "m", 5000)
-        self.assertNotIn("output", failed["tasks"][3])
+        res = ws["current"]["agents"]["code_correction"]["result"]
+        self.assertEqual(res, {"corrected_code": "print(1)\n", "verification": {"accepted": True}})
+        self.assertNotIn("/srv/secret", json.dumps(ws))
+
+    def test_agents_and_run_summaries(self):
+        ws = self.build({n: "ok" for n in self.names})
+        agents = {a["id"]: a for a in ws["agents"]}
+        self.assertFalse(agents["static_analysis"]["llm"])
+        self.assertIsNone(agents["static_analysis"]["model"])
+        self.assertTrue(agents["code_correction"]["usesTools"])
+        self.assertEqual(agents["code_correction"]["budgetMs"], ad.AGENT_TOOL_BUDGET_MS)
+        self.assertEqual(agents["code_understanding"]["budgetMs"], ad.AGENT_BUDGET_MS)
+        run = ws["runs"][0]
+        self.assertEqual((run["outcome"], run["agentsOk"], run["agentsTotal"], run["lines"]),
+                         ("succeeded", 6, 6, 9))
 
     def test_outcomes(self):
         run = make_run({n: "failed" for n in self.names})
@@ -122,10 +115,9 @@ class WorkspaceTests(unittest.TestCase):
         run = make_run({**{n: "ok" for n in self.names}, "test_generator": "failed"})
         self.assertEqual(ad.run_outcome(run), "partial")
 
-    def test_manual_criterion_only_counts_after_ok(self):
-        ws = self.build({"code_understanding": "failed"})
-        task = next(t for t in ws["tasks"] if t["assigneeId"] == "code_understanding")
-        self.assertEqual([c["result"] for c in task["validation"]], ["passed", "failed", "failed", "pending"])
+    def test_no_runs(self):
+        ws = ad.build_workspace([], self.names, "m", 5000)
+        self.assertEqual((ws["runs"], ws["current"], ws["events"]), ([], None, []))
 
 
 class FakeClock:
@@ -148,10 +140,13 @@ class ServerTests(unittest.TestCase):
         (self.root / ".env").write_text("HF_API_TOKEN=secret-token\n")
         self.fail_agents = set()
         self.gate = None
+        self.barrier = None
 
         def run_agent(agent, file_path, env=None):
             if self.gate:
                 self.gate.wait(5)
+            if self.barrier and agent["name"] != "static_analysis":
+                self.barrier.wait(5)  # breaks (and the agent fails) unless all 5 run at once
             if agent["name"] in self.fail_agents:
                 return {"error": True, "note": "API call failed", "file": file_path}
             return dict(GOOD[agent["name"]], file=file_path)
@@ -193,43 +188,47 @@ class ServerTests(unittest.TestCase):
         self.wait_idle()
         ws = self.call("GET", "/api/workspace")[1]
         self.assertEqual(ws["runs"][0]["outcome"], "succeeded")
-        self.assertTrue(all(t["status"] == "review" for t in ws["tasks"]))
-        agg = ws["runs"][0]["aggregates"]
-        self.assertEqual((agg["stepsTotal"], agg["stepsSucceeded"], agg["tasksCompleted"]), (6, 6, 6))
-        # approving without the manual check is refused with a reason
-        code, res = self.call("POST", "/api/tasks/T1.1/transition", {"to": "completed"})
-        self.assertEqual(code, 422)
-        self.assertIn("passed first", res["error"])
-        # the browser sends the criterion id URL-encoded (":" -> %3A)
-        self.assertEqual(self.call("POST", "/api/tasks/T1.1/criteria/T1.1%3Ahuman", {"result": "passed"})[0], 200)
-        self.assertEqual(self.call("POST", "/api/tasks/T1.1/transition", {"to": "completed"})[0], 200)
+        self.assertTrue(all(a["status"] == "ok" and not a["approved"]
+                            for a in ws["current"]["agents"].values()))
+        self.assertEqual(self.call("POST", "/api/agents/static_analysis/approve", {})[0], 200)
+        self.assertEqual(self.call("POST", "/api/agents/static_analysis/approve", {})[0], 200)  # idempotent
         ws = self.call("GET", "/api/workspace")[1]
-        self.assertEqual(ws["tasks"][0]["status"], "completed")
-        self.assertEqual(sum(1 for e in ws["events"] if e["type"] == "intervention"), 2)
-        # automated checks cannot be set by hand
-        self.assertEqual(self.call("POST", "/api/tasks/T1.2/criteria/T1.2:process", {"result": "passed"})[0], 422)
-        # arbitrary drags are explained, not silently applied
-        code, res = self.call("POST", "/api/tasks/T1.2/transition", {"to": "backlog"})
-        self.assertEqual(code, 422)
-        self.assertIn("backend sets this status", res["error"])
+        self.assertTrue(ws["current"]["agents"]["static_analysis"]["approved"])
+        self.assertEqual(sum(1 for e in ws["events"] if e["type"] == "human"), 1)
+        self.assertEqual(self.call("POST", "/api/agents/nope/approve", {})[0], 422)
+        self.assertEqual(self.call("POST", "/api/agents/static_analysis/frobnicate", {})[0], 404)
 
-    def test_failed_agent_blocks_then_retry_recovers(self):
+    def test_failed_agent_cannot_be_approved_and_a_rerun_recovers(self):
         self.fail_agents = {"test_generator"}
         self.call("POST", "/api/runs", {"file": "src/a.py"})
         self.wait_idle()
         ws = self.call("GET", "/api/workspace")[1]
-        failed = next(t for t in ws["tasks"] if t["assigneeId"] == "test_generator")
-        self.assertEqual((failed["status"], failed["blocked"]["note"]), ("blocked", "API call failed"))
+        failed = ws["current"]["agents"]["test_generator"]
+        self.assertEqual((failed["status"], failed["problem"]), ("failed", "API call failed"))
         self.assertEqual(ws["runs"][0]["outcome"], "partial")
+        self.assertEqual(self.call("POST", "/api/agents/test_generator/approve", {})[0], 422)
         self.fail_agents = set()
-        self.assertEqual(self.call("POST", f"/api/tasks/{failed['id']}/transition", {"to": "running"})[0], 200)
+        self.assertEqual(self.call("POST", "/api/agents/test_generator/rerun", {})[0], 200)
         self.wait_idle()
         ws = self.call("GET", "/api/workspace")[1]
-        again = next(t for t in ws["tasks"] if t["id"] == failed["id"])
-        self.assertEqual((again["status"], again["attempts"]), ("review", 2))
+        again = ws["current"]["agents"]["test_generator"]
+        self.assertEqual((again["status"], again["attempts"]), ("ok", 2))
         self.assertEqual(ws["runs"][0]["outcome"], "succeeded")
         retry = [e for e in ws["events"] if e["type"] == "retry"]
         self.assertEqual([(e["recovered"], e["status"]) for e in retry], [(True, "success")])
+
+    def test_llm_agents_run_in_parallel_after_static_analysis(self):
+        self.gate = threading.Event()
+        self.barrier = threading.Barrier(5)
+        self.call("POST", "/api/runs", {"file": "src/a.py"})
+        time.sleep(0.2)
+        statuses = {n: a["status"] for n, a in self.call("GET", "/api/workspace")[1]["current"]["agents"].items()}
+        self.assertEqual(statuses["static_analysis"], "running")  # first, and alone
+        self.assertEqual(list(statuses.values()).count("running"), 1)
+        self.gate.set()
+        self.wait_idle()
+        ws = self.call("GET", "/api/workspace")[1]
+        self.assertEqual(ws["runs"][0]["outcome"], "succeeded")  # the barrier of 5 was reached
 
     def test_one_review_at_a_time_and_path_safety(self):
         self.gate = threading.Event()
@@ -256,156 +255,14 @@ class ServerTests(unittest.TestCase):
         svc2 = server.ReviewService(self.root, AGENTS, lambda a, f, e=None: {}, "m", FakeClock())
         ws = svc2.snapshot()
         self.assertEqual(ws["runs"][0]["outcome"], "failed")
-        self.assertTrue(all(t["status"] == "blocked" for t in ws["tasks"]))
-        self.assertIn("stopped", ws["tasks"][0]["blocked"]["note"])
+        self.assertTrue(all(a["status"] == "failed" for a in ws["current"]["agents"].values()))
+        self.assertIn("stopped", ws["current"]["agents"]["static_analysis"]["problem"])
         self.gate.set()
         self.wait_idle()
 
     def test_the_token_is_never_served(self):
         _, body = self.call("GET", "/api/workspace")
         self.assertNotIn("secret-token", json.dumps(body))
-
-
-@unittest.skip("Stray tests for a shared-access-token design (server.Access, /api/login) that server.py "
-                "does not implement. Public mode is bring-your-own-key; see PublicTests below.")
-class PublicModeTests(unittest.TestCase):
-    TOKEN = "correct-horse-battery"
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
-        (self.root / "secret.py").write_text("password = 'owner-file'\n")
-        self.seen_paths = []
-
-        def run_agent(agent, file_path, env=None):
-            self.seen_paths.append(file_path)
-            return dict(GOOD[agent["name"]], file=file_path)
-
-        self.service = server.ReviewService(self.root, AGENTS, run_agent, "m", FakeClock(),
-                                            public=True, max_runs_per_hour=2)
-        self.httpd = server.make_server(self.service, "127.0.0.1", 0, None,
-                                        server.Access(True, self.TOKEN))
-        self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.cookie = None
-
-    def tearDown(self):
-        self.httpd.shutdown()
-        self.tmp.cleanup()
-
-    def call(self, method, path, body=None, headers=None, cookie=True):
-        h = {"Content-Type": "application/json", **(headers or {})}
-        if cookie and self.cookie:
-            h["Cookie"] = self.cookie
-        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method=method,
-                                     data=json.dumps(body).encode() if body is not None else None,
-                                     headers=h)
-        try:
-            with urllib.request.urlopen(req, timeout=5) as r:
-                return r.status, json.loads(r.read() or b"{}"), r.headers
-        except urllib.error.HTTPError as e:
-            return e.code, json.loads(e.read() or b"{}"), e.headers
-
-    def login(self):
-        code, _, headers = self.call("POST", "/api/login", {"token": self.TOKEN})
-        self.assertEqual(code, 200)
-        raw = headers["Set-Cookie"]
-        self.assertIn("HttpOnly", raw)
-        self.assertIn("SameSite=Strict", raw)
-        self.cookie = raw.split(";")[0]
-
-    def wait_idle(self):
-        for _ in range(200):
-            if not self.service.busy:
-                return
-            time.sleep(0.02)
-        self.fail("run did not finish")
-
-    def test_needs_a_token_of_reasonable_length(self):
-        with self.assertRaises(ValueError):
-            server.Access(True, "short")
-
-    def test_api_is_closed_until_login_and_health_leaks_nothing(self):
-        code, body, _ = self.call("GET", "/api/health")
-        self.assertEqual((code, body["authRequired"], body["authenticated"], body["mode"]),
-                         (200, True, False, "public"))
-        self.assertNotIn("agents", body)
-        for path in ("/api/workspace", "/api/files", "/api/stream"):
-            self.assertEqual(self.call("GET", path)[0], 401, path)
-        self.assertEqual(self.call("POST", "/api/runs", {"filename": "a.py", "code": "x=1"})[0], 401)
-        self.login()
-        self.assertEqual(self.call("GET", "/api/workspace")[0], 200)
-        self.assertEqual(self.call("GET", "/api/health")[1]["authenticated"], True)
-        # a forged cookie is not accepted
-        self.cookie = "horizon_session=" + "0" * 64
-        self.assertEqual(self.call("GET", "/api/workspace")[0], 401)
-
-    def test_wrong_token_is_refused_and_brute_force_is_limited(self):
-        for _ in range(8):
-            self.assertEqual(self.call("POST", "/api/login", {"token": "nope"})[0], 401)
-        code, body, _ = self.call("POST", "/api/login", {"token": self.TOKEN})
-        self.assertEqual(code, 429)  # even the right token is refused while locked out
-        self.assertIn("Too many", body["error"])
-
-    def test_reviews_uploaded_code_only_and_never_the_servers_files(self):
-        self.login()
-        self.assertEqual(self.call("GET", "/api/files")[1]["files"], [])
-        code, body, _ = self.call("POST", "/api/runs", {"file": "secret.py"})
-        self.assertEqual(code, 422)
-        self.assertIn("Send the code", body["error"])
-        code, body, _ = self.call("POST", "/api/runs", {"filename": "mine.py", "code": "x = 1\n"})
-        self.assertEqual((code, body["runId"]), (200, "run-001"))
-        self.wait_idle()
-        self.assertTrue(all(p.endswith("uploads/run-001/mine.py") for p in self.seen_paths))
-        self.assertEqual((self.root / ".horizon/uploads/run-001/mine.py").read_text(), "x = 1\n")
-        ws = self.call("GET", "/api/workspace")[1]
-        self.assertEqual(ws["tasks"][0]["title"], "Static Analysis on mine.py")
-        self.assertNotIn(str(self.root), json.dumps(ws))  # server paths are not shown
-
-    def test_upload_validation(self):
-        self.login()
-        for name, code in [("a.txt", "x=1"), (".hidden.py", "x=1"),
-                           ("ok.py", ""), ("ok.py", "a\x00b"), ("ok.py", "x" * 100_001)]:
-            self.assertEqual(self.call("POST", "/api/runs", {"filename": name, "code": code})[0], 422,
-                             name)
-        # a path in the file name is reduced to its base name, never written outside uploads/
-        code, _, _ = self.call("POST", "/api/runs", {"filename": "sub/dir/ok.py", "code": "x = 1"})
-        self.assertEqual(code, 200)
-        self.wait_idle()
-        self.assertTrue((self.root / ".horizon/uploads/run-001/ok.py").is_file())
-
-    def test_hourly_quota_protects_the_model_token(self):
-        self.login()
-        for i in range(2):
-            self.assertEqual(self.call("POST", "/api/runs", {"filename": "a.py", "code": "x=1"})[0], 200)
-            self.wait_idle()
-        code, body, _ = self.call("POST", "/api/runs", {"filename": "a.py", "code": "x=1"})
-        self.assertEqual(code, 422)
-        self.assertIn("2 reviews per hour", body["error"])
-
-    def test_only_same_origin_posts_and_security_headers(self):
-        self.login()
-        code, _, _ = self.call("POST", "/api/runs", {"filename": "a.py", "code": "x=1"},
-                               {"Origin": "https://evil.example"})
-        self.assertEqual(code, 403)
-        _, _, headers = self.call("GET", "/api/health")
-        self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
-        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
-        self.assertIsNone(headers["Access-Control-Allow-Origin"])
-
-    def test_old_uploads_are_deleted_when_a_new_run_starts(self):
-        self.login()
-        self.call("POST", "/api/runs", {"filename": "a.py", "code": "x=1"})
-        self.wait_idle()
-        self.call("POST", "/api/runs", {"filename": "b.py", "code": "y=2"})
-        self.wait_idle()
-        self.assertFalse((self.root / ".horizon/uploads/run-001").exists())
-        self.assertTrue((self.root / ".horizon/uploads/run-002/b.py").exists())
-
-    def test_logout_clears_the_cookie(self):
-        self.login()
-        _, _, headers = self.call("POST", "/api/logout", {})
-        self.assertIn("Max-Age=0", headers["Set-Cookie"])
 
 
 class PublicTests(unittest.TestCase):
@@ -488,7 +345,7 @@ class PublicTests(unittest.TestCase):
             self.assertEqual(seen["CODE_REVIEW_ALLOW_EXEC"], "0")
         ws = self.call("GET", "/api/workspace", session=self.S1)[1]
         self.assertEqual(ws["runs"][0]["outcome"], "succeeded")
-        self.assertIn("org/some-model:fast", ws["runs"][0]["config"])
+        self.assertEqual(ws["runs"][0]["model"], "org/some-model:fast")
         blob = json.dumps(ws)
         on_disk = "".join(p.read_text(errors="ignore") for p in (self.root / ".horizon").rglob("*") if p.is_file())
         self.assertNotIn(self.TOKEN, blob)
@@ -511,7 +368,7 @@ class PublicTests(unittest.TestCase):
         self.run_review(self.S2, name="two.py")
         self.wait_idle(self.S2)
         r1 = self.call("GET", "/api/workspace", session=self.S1)[1]["runs"]
-        self.assertEqual([r["label"] for r in r1], ["Review of one.py"])
+        self.assertEqual([r["file"] for r in r1], ["one.py"])
 
     def test_input_validation(self):
         big = "x = 1\n" * 30000
@@ -565,10 +422,10 @@ class PublicTests(unittest.TestCase):
     def test_rerun_needs_the_key_again(self):
         self.run_review(self.S1)
         self.wait_idle(self.S1)
-        code, res = self.call("POST", "/api/tasks/T1.2/transition", {"to": "running"}, session=self.S1)
+        code, res = self.call("POST", "/api/agents/code_understanding/rerun", {}, session=self.S1)
         self.assertEqual(code, 422)
         self.assertIn("key", res["error"])
-        code, _ = self.call("POST", "/api/tasks/T1.2/transition", {"to": "running"}, {"X-HF-Token": self.TOKEN}, self.S1)
+        code, _ = self.call("POST", "/api/agents/code_understanding/rerun", {}, {"X-HF-Token": self.TOKEN}, self.S1)
         self.assertEqual(code, 200)
         self.wait_idle(self.S1)
 

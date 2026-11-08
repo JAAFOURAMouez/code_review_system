@@ -1,25 +1,10 @@
-// Minimal hash router. Selection state (agent, task, memory, run) lives in the
-// URL so deep links work and every view agrees on what is selected.
+// Minimal hash router. The view and the selection (agent, run) live in the URL, so links can
+// be shared and the back button works.
 import { useSyncExternalStore } from 'react'
 
-export type ViewId =
-  | 'overview'
-  | 'orchestration'
-  | 'tasks'
-  | 'memory'
-  | 'history'
-  | 'evaluation'
-  | 'settings'
+export type ViewId = 'results' | 'orchestration' | 'history' | 'settings'
 
-export const VIEWS: ViewId[] = [
-  'overview',
-  'orchestration',
-  'tasks',
-  'memory',
-  'history',
-  'evaluation',
-  'settings',
-]
+export const VIEWS: ViewId[] = ['results', 'orchestration', 'history', 'settings']
 
 export interface Route {
   view: ViewId
@@ -30,7 +15,7 @@ export interface Route {
 export function parseHash(hash: string): Route {
   const raw = hash.replace(/^#\/?/, '')
   const [path = '', query = ''] = raw.split('?')
-  const view = (VIEWS as string[]).includes(path) ? (path as ViewId) : 'overview'
+  const view = (VIEWS as string[]).includes(path) ? (path as ViewId) : 'results'
   const params: Record<string, string> = {}
   new URLSearchParams(query).forEach((v, k) => {
     params[k] = v

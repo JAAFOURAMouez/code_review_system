@@ -18,8 +18,8 @@ API (JSON):
     GET  /api/workspace                    full snapshot in the front end's model
     GET  /api/stream                       server-sent events: a snapshot on every change
     POST /api/runs                         local {"file": "src/a.py"}; public {"name","code","model"}
-    POST /api/tasks/<id>/transition        {"to": "completed" | "running"}
-    POST /api/tasks/<id>/criteria/<cid>    {"result": "passed" | "failed" | "pending"}
+    POST /api/agents/<name>/approve        a person accepts this agent's output (latest review)
+    POST /api/agents/<name>/rerun          run this agent again on the latest review
 Public mode adds ``?s=<session id>`` to every call and the ``X-HF-Token`` header to POSTs.
 """
 
@@ -40,7 +40,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 
 import horizon_adapter as ad
 
@@ -142,12 +142,11 @@ class ReviewService:
                         status="failed",
                         endedAt=self.clock(),
                         problem="The server stopped before this agent finished.",
-                        checks={"process": False, "no_error": False, "non_empty": False},
                     )
                     touched = True
             if touched:
                 run["endedAt"] = self.clock()
-                self._event(run, "system", "error", "failed", "Run interrupted",
+                self._event(run, "system", "review", "failed", "Review interrupted",
                             "The server stopped while this review was in progress.")
         if self.runs:
             self._save()
@@ -321,14 +320,13 @@ class ReviewService:
                 "startedAt": self.clock(),
                 "fingerprint": ad.file_fingerprint(text),
                 "agents": {
-                    a["name"]: {"status": "pending", "attempts": 0, "manual": "pending",
-                                "approved": False}
+                    a["name"]: {"status": "pending", "attempts": 0, "approved": False}
                     for a in self.agents
                 },
                 "events": [],
             }
             self.runs.append(run)
-            self._event(run, "system", "action", "info", "Review started", display)
+            self._event(run, "system", "review", "info", "Review started", display)
             self._bump()
         threading.Thread(target=self._execute,
                          args=(run, list(range(len(self.agents))), token, model),
@@ -368,8 +366,12 @@ class ReviewService:
             with self.lock:
                 if all(r["status"] in ("ok", "failed") for r in run["agents"].values()):
                     run["endedAt"] = self.clock()
-                    self._event(run, "system", "action", "info", "Review finished",
-                                ad.run_outcome(run).replace("_", " "))
+                    outcome = ad.run_outcome(run)
+                    status = {"succeeded": "success", "failed": "failed"}.get(outcome, "warning")
+                    self._event(run, "system", "review", status, "Review finished",
+                                {"succeeded": "Every agent returned a result.",
+                                 "partial": "Some agents failed.",
+                                 "failed": "No agent returned a result."}.get(outcome))
                 self._bump()
             self._release()
 
@@ -377,14 +379,13 @@ class ReviewService:
                  lint_path: str | None = None) -> None:
         agent = self.agents[index]
         name = agent["name"]
-        desc = agent.get("description", name)
         tid = ad.task_id(run["id"], index)
         with self.lock:
             rec = run["agents"][name]
             rec.update(status="running", startedAt=self.clock(), endedAt=None, problem=None,
-                       result=None, checks=None, manual="pending", approved=False,
+                       result=None, approved=False,
                        attempts=rec.get("attempts", 0) + 1)
-            self._event(run, name, "transition", "info", f"{tid} moved to Running", desc, taskId=tid)
+            self._event(run, name, "start", "info", "Started", None, taskId=tid)
             self._bump()
         started = time.monotonic()
         try:
@@ -408,100 +409,77 @@ class ReviewService:
                 status="ok" if ok else "failed",
                 endedAt=self.clock(),
                 problem=verdict["problem"],
-                checks={k: verdict[k] for k in ("process", "no_error", "non_empty")},
                 result=stored,
             )
             tool = agent.get("script")
             if ok:
-                self._event(run, name, "tool_call", "success", f"{desc} returned output",
+                self._event(run, name, "output", "success", "Returned its result",
                             None, taskId=tid, tool=tool, durationMs=duration)
-                self._event(run, name, "transition", "info", f"{tid} moved to Review", taskId=tid)
             else:
-                self._event(run, name, "error", "failed", f"{desc} failed", verdict["problem"],
+                self._event(run, name, "error", "failed", "Failed", verdict["problem"],
                             taskId=tid, tool=tool, durationMs=duration)
-                self._event(run, name, "transition", "warning", f"{tid} moved to Blocked",
-                            verdict["problem"], taskId=tid)
             if rec["attempts"] > 1:
                 self._event(run, name, "retry", "success" if ok else "failed",
-                            f"Retry {rec['attempts'] - 1} of {desc}",
+                            f"Retry {rec['attempts'] - 1}",
                             "Recovered." if ok else "Still failing.", taskId=tid, recovered=ok)
             self._bump()
 
     # ---------------------------------------------------------------- human actions
-    def _locate(self, task_id: str) -> tuple[dict[str, Any] | None, int, str | None]:
+    def _locate(self, name: str) -> tuple[dict[str, Any] | None, int, str | None]:
+        """The latest run and the index of agent ``name`` in it."""
         run = self.current()
-        m = re.fullmatch(r"T(\d+)\.(\d+)", task_id)
-        if not run or not m or int(m.group(1)) != ad.run_number(run["id"]):
-            return None, -1, "That task belongs to a run that is no longer current."
-        idx = int(m.group(2)) - 1
-        if not 0 <= idx < len(self.agents):
-            return None, -1, "Unknown task."
+        if not run:
+            return None, -1, "There is no review yet."
+        idx = next((i for i, a in enumerate(self.agents) if a["name"] == name), -1)
+        if idx < 0 or name not in run["agents"]:
+            return None, -1, "Unknown agent."
         return run, idx, None
 
-    def transition(self, task_id: str, to: str, token: str | None = None) -> dict[str, Any]:
+    def approve(self, name: str) -> dict[str, Any]:
+        """A person has read this agent's output in the latest review and accepts it."""
         with self.lock:
-            run, idx, err = self._locate(task_id)
+            run, idx, err = self._locate(name)
             if err or run is None:
                 return {"error": err}
-            name = self.agents[idx]["name"]
             rec = run["agents"][name]
-            if to == "completed":
-                if rec["status"] != "ok":
-                    return {"error": "Only an agent output that is waiting for review can be approved."}
-                if rec.get("approved"):
-                    return {}
-                if rec.get("manual") != "passed":
-                    return {"error": "Mark “A person has read the output and accepts it” as passed first."}
-                rec["approved"] = True
-                self._event(run, "human", "intervention", "success",
-                            f"{task_id} moved to Completed", "Approved by a person.", taskId=task_id)
-                if all(r.get("approved") for r in run["agents"].values()):
-                    self._event(run, "human", "decision", "success", "All agents approved",
-                                taskId=task_id)
-                self._bump()
+            if rec["status"] != "ok":
+                return {"error": "Only a finished, successful result can be approved."}
+            if rec.get("approved"):
                 return {}
-            if to == "running":
-                if rec["status"] not in ("ok", "failed"):
-                    return {"error": "This agent has not finished yet."}
-                model = run.get("model") or self.model
-                if self.public:
-                    if not isinstance(token, str) or not TOKEN_RE.fullmatch(token):
-                        return {"error": "Add your Hugging Face key in Settings to re-run an agent."}
-                    if not Path(run.get("path", "")).is_file():
-                        return {"error": "The code for this run is no longer stored. Start a new review."}
-                res = self._reserve()
-                if res:
-                    return res
-                self._event(run, "human", "intervention", "info", f"Re-run requested for {task_id}",
-                            None, taskId=task_id)
-                run["endedAt"] = None
-                self._bump()
-                threading.Thread(target=self._execute, args=(run, [idx], token, model),
-                                 daemon=True).start()
-                return {}
-        return {
-            "error": "In live mode the backend sets this status. You can approve a reviewed "
-            "task or re-run an agent."
-        }
+            rec["approved"] = True
+            desc = self.agents[idx].get("description", name)
+            self._event(run, "human", "human", "success", f"Approved the result of {desc}",
+                        taskId=ad.task_id(run["id"], idx))
+            if all(r.get("approved") for r in run["agents"].values()):
+                self._event(run, "human", "human", "success", "Approved every result")
+            self._bump()
+            return {}
 
-    def set_criterion(self, task_id: str, criterion_id: str, result: str) -> dict[str, Any]:
-        if result not in ("pending", "passed", "failed"):
-            return {"error": "Unknown result."}
+    def rerun(self, name: str, token: str | None = None) -> dict[str, Any]:
+        """Run one agent again on the latest review."""
         with self.lock:
-            run, idx, err = self._locate(task_id)
+            run, idx, err = self._locate(name)
             if err or run is None:
                 return {"error": err}
-            rec = run["agents"][self.agents[idx]["name"]]
-            if not criterion_id.endswith(f":{ad.HUMAN_CRITERION}"):
-                return {"error": "That check is computed from the agent's output and cannot be set by hand."}
-            if rec["status"] != "ok":
-                return {"error": "There is no output to review yet."}
-            rec["manual"] = result
-            if result != "passed":
-                rec["approved"] = False
-            self._event(run, "human", "intervention", "info",
-                        f"{task_id}: review marked {result}", taskId=task_id)
+            rec = run["agents"][name]
+            if rec["status"] not in ("ok", "failed"):
+                return {"error": "This agent has not finished yet."}
+            model = run.get("model") or self.model
+            if self.public:
+                if not isinstance(token, str) or not TOKEN_RE.fullmatch(token):
+                    return {"error": "Add your Hugging Face key in Settings to re-run an agent."}
+                if not Path(run.get("path", "")).is_file():
+                    return {"error": "The code for this review is no longer stored. Start a new review."}
+            res = self._reserve()
+            if res:
+                return res
+            desc = self.agents[idx].get("description", name)
+            self._event(run, "human", "human", "info", f"Asked to re-run {desc}",
+                        taskId=ad.task_id(run["id"], idx))
+            run["endedAt"] = None
             self._bump()
+            threading.Thread(target=self._execute, args=(run, [idx], token, model),
+                             daemon=True).start()
             return {}
 
 
@@ -683,10 +661,10 @@ class Handler(BaseHTTPRequestHandler):
                 res = svc.start_upload(body.get("name"), body.get("code"), token, body.get("model"))
             else:
                 res = svc.start_run(body.get("file"))
-        elif m := re.fullmatch(r"/api/tasks/([^/]+)/transition", path):
-            res = svc.transition(unquote(m.group(1)), str(body.get("to", "")), token)
-        elif m := re.fullmatch(r"/api/tasks/([^/]+)/criteria/([^/]+)", path):
-            res = svc.set_criterion(unquote(m.group(1)), unquote(m.group(2)), str(body.get("result", "")))
+        elif m := re.fullmatch(r"/api/agents/([a-z_]+)/approve", path):
+            res = svc.approve(m.group(1))
+        elif m := re.fullmatch(r"/api/agents/([a-z_]+)/rerun", path):
+            res = svc.rerun(m.group(1), token)
         else:
             return self._json(404, {"error": "Unknown endpoint."})
         self._json(422 if res.get("error") else 200, res)

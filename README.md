@@ -15,18 +15,17 @@ behave identically) and shows each run live. Runs are stored in `.horizon/runs.j
 
 What the dashboard shows, and where it comes from:
 
-| Dashboard | Source |
+| View | Source |
 |---|---|
-| Agents, tasks, board | One task per agent per run. Status follows the real result: running, review (output received), blocked (failed) |
-| Failed | Process error, timeout, `"error": true` in the output, **or an empty result** (the LLM agents sometimes return `""` without flagging an error) |
-| Approve / Re-run | The only human actions: tick "a person has read the output", approve it, or re-run an agent |
-| Timeline "plan" | The per-agent timeout (`AGENT_TIMEOUT`, 120 s; `AGENT_TOOL_TIMEOUT`, 300 s for the tool-loop agents): static analysis first, then the LLM agents side by side |
-| Memory | Linter findings and the tool checks of the corrected code and generated tests are *stored* (tool output). Model explanations, suggestions and docs are *inferred*, with no confidence score because the agents do not report one |
-| Tokens and cost | Not shown yet (the LLM agents include a `usage` field in their JSON output) |
+| Results | Each agent's JSON output for the latest review. Numbers under "Checked with the linters" / "Checked with pytest" come from the tools, not from the model |
+| Orchestration | The real pipeline: static analysis first, then the five model agents in parallel; statuses and the timeline come from the agents' start and end times |
+| History | Every stored review and its events |
+| Failed | Process error, timeout, `"error": true` in the output, **or an empty result** |
+| Approve / Re-run | The only human actions: approve an agent's result, or run one agent again |
 
 Developing the front end: `cd frontend && npm install && npm run dev`, then open the dev server with
 `?api=http://127.0.0.1:8787` (keep `python server.py` running). `npm run build` refreshes
-`frontend/dist`, which `server.py` serves. Add `?demo` to any address to see the sample scenario.
+`frontend/dist`, which `server.py` serves.
 
 Tests: `python -m unittest discover tests` (backend, no API key needed).
 

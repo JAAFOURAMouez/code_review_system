@@ -189,7 +189,7 @@ function KeyStep() {
 
 /** Shown by a live backend before the first review exists. */
 export function FirstRun() {
-  const { repoLabel, submitMode, hasKey } = useApp()
+  const { address, submitMode, hasKey } = useApp()
   const upload = submitMode === 'upload'
   return (
     <div className="landing">
@@ -212,7 +212,7 @@ export function FirstRun() {
           {upload ? (
             <li>Your key stays in this browser and is used only for your reviews.</li>
           ) : (
-            <li>Connected to {repoLabel.replace('Live · ', '')}, using the key in your .env.</li>
+            <li>Connected to {address}, using the key in your .env.</li>
           )}
         </ul>
       </section>

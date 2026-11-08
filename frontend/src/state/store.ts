@@ -1,23 +1,15 @@
-// Application store: mirrors the repository's workspace snapshot and holds the
-// few pieces of app-level state (settings, toasts, read notifications).
-// Selection and filters live in the URL (see router.ts) or in view-local state.
-import { useSyncExternalStore } from 'react'
-import type { HorizonRepository, ReviewInput, TransitionRequest } from '../data/repository.ts'
+// Application store: the backend's latest snapshot plus a little app state (connection,
+// saved key, toasts). Selection lives in the URL (see router.ts).
+import { useEffect, useState, useSyncExternalStore } from 'react'
+import type { Api, ReviewInput } from '../api.ts'
 import {
   clearCredentials,
   getCredentials,
   looksLikeKey,
   looksLikeModel,
   saveCredentials,
-} from './credentials.ts'
-import { TASK_STATUS_LABEL, type CriterionResult, type Workspace } from '../domain/types.ts'
-import {
-  DEFAULT_SETTINGS,
-  SPEED_INTERVAL_MS,
-  loadSettings,
-  saveSettings,
-  type Settings,
-} from './settings.ts'
+} from '../credentials.ts'
+import type { Workspace } from '../types.ts'
 
 export interface Toast {
   id: number
@@ -29,19 +21,17 @@ export interface AppState {
   status: 'loading' | 'ready' | 'error'
   error?: string
   ws?: Workspace
-  repoKind: 'demo' | 'live'
-  repoLabel: string
-  /** The repository can start new reviews (live backend only). */
-  canStartRun: boolean
+  /** The server's address. */
+  address: string
   /** `upload`: visitors send code and bring their own model key (public deployments). */
   submitMode: 'path' | 'upload'
   /** A model key is saved in this browser (upload mode). */
   hasKey: boolean
-  /** False while a live backend cannot be reached. */
+  /** False while the server cannot be reached. */
   connected: boolean
-  settings: Settings
+  /** Server clock minus this browser's clock, from the latest snapshot. */
+  clockOffset: number
   toasts: Toast[]
-  readNotifications: string[]
 }
 
 type Listener = () => void
@@ -49,18 +39,15 @@ type Listener = () => void
 export class AppStore {
   private state: AppState = {
     status: 'loading',
-    repoKind: 'demo',
-    repoLabel: '',
-    canStartRun: false,
+    address: '',
     submitMode: 'path',
     hasKey: false,
     connected: true,
-    settings: DEFAULT_SETTINGS,
+    clockOffset: 0,
     toasts: [],
-    readNotifications: [],
   }
   private listeners = new Set<Listener>()
-  private repo: HorizonRepository | undefined
+  private api: Api | undefined
   private unsubscribe: (() => void) | undefined
   private toastId = 1
 
@@ -76,76 +63,57 @@ export class AppStore {
     for (const l of this.listeners) l()
   }
 
-  async init(repo: HorizonRepository): Promise<void> {
-    this.repo = repo
+  fail(message: string) {
+    this.set({ status: 'error', error: message })
+  }
+
+  async init(api: Api): Promise<void> {
+    this.api = api
     this.set({
-      repoKind: repo.kind,
-      repoLabel: repo.label,
-      canStartRun: !!repo.startRun,
-      submitMode: repo.submit ?? 'path',
+      address: api.address,
+      submitMode: api.submit,
       hasKey: !!getCredentials().key,
-      settings: loadSettings(),
     })
-    repo.onConnection?.((connected) => this.set({ connected }))
+    api.onConnection((connected) => this.set({ connected }))
     await this.load()
   }
 
   async load(): Promise<void> {
-    if (!this.repo) return
+    if (!this.api) {
+      location.reload()
+      return
+    }
     this.set({ status: 'loading', error: undefined })
     try {
-      const ws = await this.repo.load()
+      const ws = await this.api.load()
       this.unsubscribe?.()
-      this.unsubscribe = this.repo.subscribe((next) => this.set({ ws: next }))
-      this.set({ ws, status: 'ready' })
-      this.applySimulation()
+      this.unsubscribe = this.api.subscribe((next) =>
+        this.set({ ws: next, clockOffset: next.now - Date.now() }),
+      )
+      this.set({ ws, status: 'ready', clockOffset: ws.now - Date.now() })
     } catch (e) {
-      this.set({
-        status: 'error',
-        error: e instanceof Error ? e.message : 'Something went wrong while loading.',
-      })
+      this.fail(e instanceof Error ? e.message : 'Something went wrong while loading.')
     }
   }
 
-  private applySimulation() {
-    const { settings } = this.state
-    this.repo?.configureSimulation?.({
-      enabled: settings.simulate,
-      intervalMs: SPEED_INTERVAL_MS[settings.speed],
-      failureRate: settings.injectFailures ? 0.05 : 0,
-    })
+  async approve(agent: string, label: string): Promise<void> {
+    const res = await this.api?.approve(agent)
+    if (res?.error) this.toast('error', res.error)
+    else if (res) this.toast('success', `${label}: result approved`)
   }
 
-  updateSettings(patch: Partial<Settings>) {
-    const settings = { ...this.state.settings, ...patch }
-    saveSettings(settings)
-    this.set({ settings })
-    this.applySimulation()
-  }
-
-  async transitionTask(req: TransitionRequest): Promise<boolean> {
-    if (!this.repo) return false
-    const res = await this.repo.transitionTask(req)
-    if (res.error) {
-      this.toast('error', res.error)
-      return false
-    }
-    this.toast('success', `${req.taskId} moved to ${TASK_STATUS_LABEL[req.to]}`)
-    return true
-  }
-
-  async setCriterion(taskId: string, criterionId: string, result: CriterionResult): Promise<void> {
-    if (!this.repo) return
-    const res = await this.repo.setCriterion(taskId, criterionId, result)
-    if (res.error) this.toast('error', res.error)
+  async rerun(agent: string, label: string): Promise<void> {
+    const res = await this.api?.rerun(agent)
+    if (res?.error) this.toast('error', res.error)
+    else if (res) this.toast('info', `${label} is running again`)
   }
 
   listFiles(): Promise<string[]> {
-    return this.repo?.listFiles?.() ?? Promise.resolve([])
+    return this.api?.listFiles() ?? Promise.resolve([])
   }
 
   async startReview(input: ReviewInput): Promise<boolean> {
-    const res = await this.repo?.startRun?.(input)
+    const res = await this.api?.startRun(input)
     if (!res) return false
     if (res.error) {
       this.toast('error', res.error)
@@ -177,20 +145,8 @@ export class AppStore {
   /** Remove the key and start a new, empty session. The server deletes the old one on its own. */
   forgetSession() {
     clearCredentials()
-    this.repo?.resetSession?.()
+    this.api?.resetSession()
     location.reload()
-  }
-
-  async resetDemo(): Promise<void> {
-    if (!this.repo) return
-    await this.repo.reset()
-    this.set({ readNotifications: [] })
-    this.toast('success', 'Demo data reset')
-  }
-
-  markNotificationsRead(ids: string[]) {
-    const merged = [...new Set([...this.state.readNotifications, ...ids])]
-    this.set({ readNotifications: merged })
   }
 
   toast(kind: Toast['kind'], message: string) {
@@ -215,4 +171,16 @@ export function useWorkspace(): Workspace {
   const { ws } = useApp()
   if (!ws) throw new Error('useWorkspace called before the workspace loaded')
   return ws
+}
+
+/** The server's current time, ticking every second while `live` is true (a review is running). */
+export function useServerNow(live: boolean): number {
+  const { clockOffset, ws } = useApp()
+  const [, tick] = useState(0)
+  useEffect(() => {
+    if (!live) return
+    const id = setInterval(() => tick((n) => n + 1), 1000)
+    return () => clearInterval(id)
+  }, [live])
+  return live ? Date.now() + clockOffset : (ws?.now ?? Date.now())
 }
