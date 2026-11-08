@@ -6,5 +6,9 @@ radon
 redis
 openai
 python-dotenv
+# runs the generated tests (agents/tools.py run_tests)
+pytest
 # optional: file watcher
 watchdog
+# optional: MCP server (mcp_server.py)
+mcp

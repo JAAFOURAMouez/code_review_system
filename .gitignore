@@ -96,3 +96,7 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+
+# Evaluation
+eval/.cache/
+eval/results/

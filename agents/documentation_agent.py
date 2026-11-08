@@ -1,114 +1,93 @@
 #!/usr/bin/env python3
 """
-Documentation Agent for the Code Review & Improvement System.
-Uses Hugging Face Inference API to generate documentation for code.
+Documentation Agent: an overview, docstrings for the public functions and classes, and a
+usage example.
+
+Input: the file and the linter findings (the missing-docstring ones tell it where to start).
+Output (structured JSON, validated against SCHEMA) plus ``documentation``, the same content as
+Markdown for people to read.
 """
 
-import json
 import os
 import sys
-import time
-from typing import Dict, List, Any, Optional
-from dotenv import load_dotenv
+from typing import Any, Dict
 
-# Add the project root to the Python path so we can import from agents module
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from agents.hf_client import generate_text
+# pylint: disable=wrong-import-position
+from agents.common import lint_section, load_lint, numbered, run_agent_cli  # noqa: E402
+from agents.hf_client import generate_json  # noqa: E402
 
-load_dotenv()  # Load environment variables from .env file
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "overview": {"type": "string", "minLength": 1},
+        "docstrings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1,
+                             "description": "`module`, `func`, `Class` or `Class.method`."},
+                    "kind": {"type": "string", "enum": ["module", "function", "class", "method"]},
+                    "docstring": {"type": "string", "minLength": 1,
+                                  "description": "Docstring text without the triple quotes."},
+                },
+                "required": ["name", "kind", "docstring"],
+                "additionalProperties": False,
+            },
+        },
+        "usage_example": {"type": "string",
+                          "description": "Short runnable Python example, or an empty string."},
+    },
+    "required": ["overview", "docstrings", "usage_example"],
+    "additionalProperties": False,
+}
 
-def generate_documentation(code: str) -> Dict[str, Any]:
-    """
-    Generate documentation for the given code.
+SYSTEM = ("You are a technical writer for Python projects. Document only what the code really "
+          "does, in Google-style docstrings (Args, Returns, Raises).")
 
-    Args:
-        code: The source code to analyze
 
-    Returns:
-        Dictionary with generated documentation (as a string) and metadata
-    """
-    prompt = f"""You are an AI that generates documentation. Given the following code, provide:
-1. Docstrings for functions and classes.
-2. A brief overview of what the code does.
-3. Usage examples if appropriate.
+def to_markdown(doc: Dict[str, Any], file_name: str) -> str:
+    """The structured documentation as Markdown."""
+    parts = [f"# {file_name}", "", doc["overview"].strip()]
+    if doc["docstrings"]:
+        parts += ["", "## API"]
+        for d in doc["docstrings"]:
+            parts += ["", f"### `{d['name']}` ({d['kind']})", "", d["docstring"].strip()]
+    if doc["usage_example"].strip():
+        parts += ["", "## Usage", "", "```python", doc["usage_example"].strip(), "```"]
+    return "\n".join(parts) + "\n"
 
-Format your response exactly as:
 
-DOCUMENTATION:
-[generated documentation]
+def generate_documentation(code: str, file_path: str = "module.py") -> Dict[str, Any]:
+    """Document the code. Returns the SCHEMA fields plus ``documentation`` (Markdown)."""
+    findings, source = load_lint(code, file_path)
+    docstring_findings = [f for f in findings if "docstring" in str(f.get("symbol") or f.get("message"))]
+    name = os.path.basename(file_path)
+    prompt = f"""Write documentation for the Python file `{name}`:
 
-If documentation cannot be generated, write 'None' under DOCUMENTATION.
+1. `overview`: what the module is for and how its parts fit together (a short paragraph).
+2. `docstrings`: one entry per public function, class and method, plus the module itself.
+   Prioritise the ones pylint reports as missing below.
+3. `usage_example`: a short example that would run against this module (import from
+   `{os.path.splitext(name)[0]}`), or "" if an example makes no sense.
 
-Code:
-{code}
+{lint_section(docstring_findings or findings, limit=40)}
+
+Code (line numbers on the left are not part of the code):
+{numbered(code)}
 """
+    doc = generate_json(prompt, SCHEMA, name="documentation", system=SYSTEM, max_tokens=2500)
+    doc["documentation"] = to_markdown(doc, name)
+    doc["lint_source"] = source
+    return doc
 
-    try:
-        response = generate_text(prompt, max_tokens=500, temperature=0.2, top_p=0.95)
-        return parse_documentation_response(response)
-    except Exception as e:
-        return {
-            "documentation": "",
-            "error": True,
-            "detail": str(e),
-            "note": "Unable to generate documentation due to API connectivity issues. Please check your network connection and HF_API_TOKEN."
-        }
 
-def parse_documentation_response(response: str) -> Dict[str, Any]:
-    """Parse the structured response from the LLM."""
-    documentation = ""
+def analyze(code: str, file_path: str) -> Dict[str, Any]:
+    """Agent entry point."""
+    return generate_documentation(code, file_path)
 
-    # Split by sections
-    if "DOCUMENTATION:" in response:
-        parts = response.split("DOCUMENTATION:")
-        doc_part = parts[1].strip()
-        if doc_part and doc_part != "None":
-            documentation = doc_part
-
-    return {
-        "documentation": documentation
-    }
-
-def analyze_file(file_path: str) -> Dict[str, Any]:
-    """
-    Analyze a source code file to generate documentation.
-
-    Args:
-        file_path: Path to the source code file
-
-    Returns:
-        Analysis results in dictionary format
-    """
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            code = f.read()
-    except IOError as e:
-        return {
-            "file": file_path,
-            "error": f"Could not read file: {str(e)}",
-            "agent": "documentation_agent",
-            "timestamp": time.time()
-        }
-
-    result = generate_documentation(code)
-    result.update({
-        "file": file_path,
-        "agent": "documentation_agent",
-        "timestamp": time.time()
-    })
-
-    return result
-
-def main():
-    """Main entry point for the agent."""
-    if len(sys.argv) < 2:
-        print("Usage: python documentation_agent.py <file_path>")
-        sys.exit(1)
-
-    file_path = sys.argv[1]
-    result = analyze_file(file_path)
-    print(json.dumps(result, indent=2))
 
 if __name__ == "__main__":
-    main()
+    run_agent_cli("documentation_agent", analyze)

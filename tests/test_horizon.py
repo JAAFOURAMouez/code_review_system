@@ -478,8 +478,14 @@ class PublicTests(unittest.TestCase):
         env = self.seen_env[0]
         self.assertEqual((env["HF_API_TOKEN"], env["HF_MODEL"]), (self.TOKEN, "org/some-model:fast"))
         self.assertNotIn("server-secret", json.dumps(env))
-        self.assertLessEqual(set(env), {"PATH", "LANG", "LC_ALL", "HF_API_TOKEN", "HF_MODEL", "PYTHONIOENCODING",
-                                        "PYTHONDONTWRITEBYTECODE", "HOME", "HF_MIN_TOKENS", "HF_REASONING_EFFORT", "AGENT_TIMEOUT"})
+        allowed = {"PATH", "LANG", "LC_ALL", "HF_API_TOKEN", "HF_MODEL", "PYTHONIOENCODING",
+                   "PYTHONDONTWRITEBYTECODE", "HOME", "CODE_REVIEW_ALLOW_EXEC", server.LINT_ENV,
+                   *server.AGENT_ENV_KEYS}
+        for seen in self.seen_env:
+            self.assertLessEqual(set(seen), allowed)
+            self.assertNotIn("server-secret", json.dumps(seen))
+            # Visitors' code is never executed by the generated tests unless the operator opts in.
+            self.assertEqual(seen["CODE_REVIEW_ALLOW_EXEC"], "0")
         ws = self.call("GET", "/api/workspace", session=self.S1)[1]
         self.assertEqual(ws["runs"][0]["outcome"], "succeeded")
         self.assertIn("org/some-model:fast", ws["runs"][0]["config"])

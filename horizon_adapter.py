@@ -4,10 +4,11 @@ Pure functions only (no I/O, no threads), so the mapping is easy to test. Everyt
 the Workspace is derived from what the agents really did. Nothing here invents numbers:
 
 * Agent statuses come from the process results the orchestrator already collects.
-* "Plan" for the timeline is the per-agent time budget (``AGENT_BUDGET_MS``), because the
-  orchestrator runs agents one after another with a fixed timeout and has no other plan.
-* Token usage is not reported by the agents, so it is left out and flagged in
-  ``capabilities.tokens = False``.
+* "Plan" for the timeline is the per-agent time budget: static analysis first, then the LLM
+  agents side by side (they run in parallel), each with its timeout (``AGENT_BUDGET_MS``, or
+  ``AGENT_TOOL_BUDGET_MS`` for the agents that call tools in a loop).
+* Token usage: the LLM agents add a ``usage`` field to their JSON, but it is not shown here
+  yet, so it is left out and flagged in ``capabilities.tokens = False``.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from typing import Any
 
 # Same value as orchestrator.run_agent's timeout (AGENT_TIMEOUT seconds, default 120).
 AGENT_BUDGET_MS = int(os.getenv("AGENT_TIMEOUT", "120")) * 1000
+# Same value as orchestrator.agent_timeout for agents with "uses_tools" (AGENT_TOOL_TIMEOUT).
+AGENT_TOOL_BUDGET_MS = int(os.getenv("AGENT_TOOL_TIMEOUT", "300")) * 1000
 
 PHASE_ID = "pipeline"
 
@@ -39,42 +42,48 @@ AGENT_INFO: dict[str, dict[str, Any]] = {
     "code_understanding": {
         "name": "Code Understanding",
         "role": "Explains what the code does and flags complex sections",
-        "tools": ["LLM"],
+        "tools": ["LLM", "linter findings"],
         "llm": True,
         "artifact": "Code explanation",
-        "responsibilities": ["Explain the code", "List complex or hard-to-read sections"],
+        "responsibilities": ["Explain the code",
+                             "List complex sections, using radon's complexity scores"],
     },
     "improvement_suggestion": {
         "name": "Improvements",
         "role": "Suggests refactorings and best practices",
-        "tools": ["LLM"],
+        "tools": ["LLM", "linter findings"],
         "llm": True,
         "artifact": "Improvement suggestions",
-        "responsibilities": ["Suggest refactorings", "Point at lines that could be improved"],
+        "responsibilities": ["Suggest refactorings, grouping related linter findings",
+                             "Rank suggestions by category and severity"],
     },
     "test_generator": {
         "name": "Test Generator",
-        "role": "Drafts unit tests for the file",
-        "tools": ["LLM"],
+        "role": "Writes unit tests and runs them against the file",
+        "tools": ["LLM", "run_tests", "check_syntax"],
         "llm": True,
+        "uses_tools": True,
         "artifact": "Generated unit tests",
-        "responsibilities": ["Generate unit tests for the file"],
+        "responsibilities": ["Generate unit tests for the file",
+                             "Run them with pytest and fix them before submitting"],
     },
     "documentation_agent": {
         "name": "Documentation",
         "role": "Drafts docstrings, an overview and usage examples",
-        "tools": ["LLM"],
+        "tools": ["LLM", "linter findings"],
         "llm": True,
         "artifact": "Generated documentation",
         "responsibilities": ["Write an overview", "Write docstrings and usage examples"],
     },
     "code_correction": {
         "name": "Code Correction",
-        "role": "Proposes a corrected version of the file",
-        "tools": ["LLM"],
+        "role": "Corrects the file and checks the result with the linters",
+        "tools": ["LLM", "run_pylint", "run_flake8", "run_bandit", "run_radon", "run_tests"],
         "llm": True,
+        "uses_tools": True,
         "artifact": "Corrected code",
-        "responsibilities": ["Return a corrected version of the file"],
+        "responsibilities": ["Return a corrected version of the file",
+                             "Re-run the linters on it until it has fewer findings"],
     },
 }
 
@@ -106,6 +115,22 @@ def info(agent_name: str) -> dict[str, Any]:
             "responsibilities": [],
         },
     )
+
+
+def budget_ms(agent_name: str) -> int:
+    """Time budget of an agent (its timeout)."""
+    return AGENT_TOOL_BUDGET_MS if info(agent_name).get("uses_tools") else AGENT_BUDGET_MS
+
+
+def planned_window(agent_names: list[str], name: str, started_at: int) -> tuple[int, int]:
+    """(start, end) planned for an agent: the non-LLM agents one after another, then the LLM
+    agents all at once."""
+    first = [n for n in agent_names if not info(n)["llm"]]
+    if name in first:
+        start = started_at + sum(budget_ms(n) for n in first[: first.index(name)])
+    else:
+        start = started_at + sum(budget_ms(n) for n in first)
+    return start, start + budget_ms(name)
 
 
 def evaluate_output(agent_name: str, result: Any) -> dict[str, Any]:
@@ -238,6 +263,42 @@ def _strip_fences(text: str) -> str:
     return m.group(1) if m else t
 
 
+def _improvement_line(item: dict[str, Any]) -> str:
+    where = f"line {item['line']}" if item.get("line") not in (None, "") else "whole file"
+    tags = ", ".join(str(item[k]) for k in ("severity", "category") if item.get(k))
+    related = item.get("related_findings") or []
+    return (f"{where}{f' [{tags}]' if tags else ''}: {item.get('description', '')}"
+            + (f" ({', '.join(map(str, related))})" if related else ""))
+
+
+def verification_text(name: str, result: dict[str, Any]) -> str | None:
+    """What the tools measured on an agent's output (correction and tests), as one paragraph."""
+    v = result.get("verification")
+    if not isinstance(v, dict):
+        return None
+    if name == "code_correction":
+        if not v.get("syntax_valid"):
+            return "The corrected code does not compile."
+        before = v.get("findings_before") or {}
+        per_tool = ", ".join(f"{k} {before.get(k, 0)}→{n}"
+                             for k, n in (v.get("findings_after") or {}).items())
+        text = (f"Linter findings: {v.get('total_before')} before, {v.get('total_after')} after"
+                + (f" ({per_tool})." if per_tool else "."))
+        if v.get("missing_api"):
+            text += " Removed public names: " + ", ".join(v["missing_api"]) + "."
+        if v.get("problems"):
+            text += " Not accepted: " + "; ".join(v["problems"]) + "."
+        return text
+    if name == "test_generator":
+        if not v.get("syntax_valid", True):
+            return "The generated tests do not compile."
+        if not v.get("ran"):
+            return f"The tests were not run ({v.get('reason', 'not run')})."
+        return (f"{v.get('runner')}: {v.get('tests')} tests, {v.get('failures')} failures, "
+                f"{v.get('errors')} errors, {v.get('skipped')} skipped.")
+    return None
+
+
 def agent_output(name: str, run: dict[str, Any], result: Any) -> dict[str, str] | None:
     """The agent's result as something a person can read, or None when there is nothing."""
     if not isinstance(result, dict):
@@ -256,7 +317,7 @@ def agent_output(name: str, run: dict[str, Any], result: Any) -> dict[str, str] 
             text += f"\n- line {sec.get('line')}: {sec.get('reason')}"
         return {"kind": "text", "text": text, "filename": f"{stem}_explanation.txt"}
     if name == "improvement_suggestion" and result.get("improvements"):
-        text = "\n".join(f"line {i.get('line', '?')}: {i.get('description', '')}" for i in result["improvements"])
+        text = "\n".join(_improvement_line(i) for i in result["improvements"])
         return {"kind": "text", "text": text, "filename": f"{stem}_improvements.txt"}
     if name == "test_generator" and result.get("tests"):
         return {"kind": "code", "text": _strip_fences(str(result["tests"])), "filename": f"test_{stem}.py"}
@@ -267,18 +328,21 @@ def agent_output(name: str, run: dict[str, Any], result: Any) -> dict[str, str] 
     return None
 
 
-def _task(run: dict[str, Any], index: int, name: str, now: int) -> dict[str, Any]:
+def _task(run: dict[str, Any], index: int, name: str, now: int,
+          agent_names: list[str] | None = None) -> dict[str, Any]:
     rec = run["agents"][name]
     meta = info(name)
     tid = task_id(run["id"], index)
     status = _task_status(rec)
-    planned_start = run["startedAt"] + index * AGENT_BUDGET_MS
+    planned_start, planned_end = planned_window(agent_names or list(run["agents"]), name,
+                                                run["startedAt"])
     task: dict[str, Any] = {
         "id": tid,
         "title": f"{meta['name']} on {run['file']}",
         "description": meta["role"] + ". "
         + (
-            "Sends the file's contents to the Hugging Face inference API."
+            "Receives the static analysis findings and sends the file's contents to the "
+            "Hugging Face inference API."
             if meta["llm"]
             else "Runs locally."
         ),
@@ -290,7 +354,7 @@ def _task(run: dict[str, Any], index: int, name: str, now: int) -> dict[str, Any
         "artifact": meta["artifact"],
         "progress": 100 if status in ("review", "completed") else 0,
         "plannedStart": planned_start,
-        "plannedEnd": planned_start + AGENT_BUDGET_MS,
+        "plannedEnd": planned_end,
         "attempts": rec.get("attempts", 0),
         "validation": _criteria(tid, rec),
     }
@@ -403,7 +467,7 @@ def _memories(run: dict[str, Any], agent_names: list[str], model: str) -> list[d
             )
         elif name == "improvement_suggestion":
             items = res.get("improvements") or []
-            body = "\n".join(f"- line {i.get('line', '?')}: {i.get('description', '')}" for i in items)
+            body = "\n".join(f"- {_improvement_line(i)}" for i in items)
             out.append(
                 base(
                     f"{rid}-improvements",
@@ -420,7 +484,24 @@ def _memories(run: dict[str, Any], agent_names: list[str], model: str) -> list[d
                     tags=["improvements"],
                 )
             )
-        elif name == "documentation_agent":
+        if name in ("code_correction", "test_generator") and verification_text(name, res):
+            out.append(
+                base(
+                    f"{rid}-{name}-verification",
+                    createdAt=when,
+                    kind="observation",
+                    origin="stored",
+                    title=("Corrected code checked with the linters" if name == "code_correction"
+                           else "Generated tests run with pytest"),
+                    body=verification_text(name, res),
+                    provenance={"sourceType": "tool_output", "source": "agents/tools.py",
+                                "agentId": name},
+                    taskIds=[tid],
+                    links=link,
+                    tags=["verification"],
+                )
+            )
+        if name == "documentation_agent":
             out.append(
                 base(
                     f"{rid}-documentation",
@@ -520,7 +601,8 @@ def build_workspace(
             {
                 "id": PHASE_ID,
                 "name": "Review pipeline",
-                "summary": "The orchestrator runs each agent on the file, one after another.",
+                "summary": "Static analysis runs first; its findings go to the LLM agents, "
+                "which run in parallel.",
                 "order": 1,
             }
         ],
@@ -547,14 +629,14 @@ def build_workspace(
 
     if runs:
         cur = runs[-1]
-        tasks = [_task(cur, i, n, now) for i, n in enumerate(agent_names)]
+        tasks = [_task(cur, i, n, now, agent_names) for i, n in enumerate(agent_names)]
         ws["tasks"] = tasks
         ws["milestones"] = [
             {
                 "id": f"{cur['id']}-done",
                 "name": "All agents approved",
                 "phaseId": PHASE_ID,
-                "due": cur["startedAt"] + len(agent_names) * AGENT_BUDGET_MS,
+                "due": max(planned_window(agent_names, n, cur["startedAt"])[1] for n in agent_names),
                 "dependsOn": [t["id"] for t in tasks],
             }
         ]

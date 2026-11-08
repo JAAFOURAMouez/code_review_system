@@ -20,9 +20,9 @@ What the dashboard shows, and where it comes from:
 | Agents, tasks, board | One task per agent per run. Status follows the real result: running, review (output received), blocked (failed) |
 | Failed | Process error, timeout, `"error": true` in the output, **or an empty result** (the LLM agents sometimes return `""` without flagging an error) |
 | Approve / Re-run | The only human actions: tick "a person has read the output", approve it, or re-run an agent |
-| Timeline "plan" | The per-agent timeout in `orchestrator.run_agent` (`AGENT_TIMEOUT`, default 120 s), one agent after another |
-| Memory | Linter findings are *stored* (tool output). Model explanations, suggestions and docs are *inferred*, with no confidence score because the agents do not report one |
-| Tokens and cost | Not shown: the agents do not return usage |
+| Timeline "plan" | The per-agent timeout (`AGENT_TIMEOUT`, 120 s; `AGENT_TOOL_TIMEOUT`, 300 s for the tool-loop agents): static analysis first, then the LLM agents side by side |
+| Memory | Linter findings and the tool checks of the corrected code and generated tests are *stored* (tool output). Model explanations, suggestions and docs are *inferred*, with no confidence score because the agents do not report one |
+| Tokens and cost | Not shown yet (the LLM agents include a `usage` field in their JSON output) |
 
 Developing the front end: `cd frontend && npm install && npm run dev`, then open the dev server with
 `?api=http://127.0.0.1:8787` (keep `python server.py` running). `npm run build` refreshes
@@ -58,8 +58,12 @@ This system consists of five specialized agents that work together to analyze co
 - `agents/improvement_suggestion.py` - LLM-powered improvement suggestion agent
 - `agents/test_generator.py` - LLM-powered test generation agent
 - `agents/documentation_agent.py` - LLM-powered documentation agent
-- `agents/code_correction_agent.py` - LLM-powered code correction agent (uses Hugging Face Inference Providers)
-- `orchestrator.py` - Runs all agents on a file and aggregates results
+- `agents/code_correction_agent.py` - LLM-powered code correction agent, checks its candidates with the tools
+- `agents/tools.py` - Tools for the LLM agents and the MCP server (linters, syntax check, test runner)
+- `agents/hf_client.py` - LLM client: structured JSON output and the function-calling loop
+- `orchestrator.py` - Runs static analysis, then the LLM agents in parallel, and aggregates results
+- `mcp_server.py` - MCP server exposing the tools
+- `eval/run_eval.py` - Evaluation on 20 files from 5 repositories
 - `watcher.py` - Watches a directory for changes and triggers the orchestrator
 - `src/sample.py` - Sample Python file with intentional issues for testing
 
@@ -94,16 +98,12 @@ This system consists of five specialized agents that work together to analyze co
 
 ### Using Local Ollama (Alternative to Hugging Face)
 
-If you prefer to use a local LLM via Ollama instead of the Hugging Face API:
+The client speaks the OpenAI API, so any OpenAI-compatible server works, Ollama included:
 
-1. Install Ollama from [https://ollama.ai](https://ollama.ai) (follow the installation instructions for your platform).
-2. Pull a code model, for example:
-   ```bash
-   ollama pull codellama:7b
-   ```
-3. Modify the LLM-powered agents to use Ollama instead of the Hugging Face API.
-   - Replace the `call_huggingface_api` function with a function that calls the Ollama API.
-   - The Ollama API endpoint is typically `http://localhost:11434/api/generate`.
+```bash
+ollama pull qwen2.5-coder:7b      # a model with tool (function calling) support
+export HF_BASE_URL=http://localhost:11434/v1 HF_API_TOKEN=ollama HF_MODEL=qwen2.5-coder:7b
+```
 
 ## Usage
 
@@ -147,10 +147,87 @@ agent: static_analysis
 
 ## How It Works
 
-1. The orchestrator runs each agent as a subprocess and collects their JSON output.
-2. Each agent analyzes the input file and returns structured results.
-3. The orchestrator prints a formatted summary of all results.
-4. The file watcher monitors the target directory for file changes and automatically triggers the orchestrator.
+```
+                       ┌──────────────────────────┐
+  file.py ───────────▶ │ 1. static_analysis       │  pylint, flake8, bandit, radon
+                       └────────────┬─────────────┘
+                                    │ findings (JSON file, CODE_REVIEW_LINT_RESULTS)
+        ┌───────────────┬───────────┼──────────────┬────────────────┐   2. in parallel
+        ▼               ▼           ▼              ▼                ▼
+  understanding   improvements   documentation   test_generator   code_correction
+  (JSON schema)   (JSON schema)  (JSON schema)   (tool loop)      (tool loop)
+                                                  run_tests        run_pylint / run_flake8 /
+                                                  check_syntax     run_bandit / run_radon /
+                                                                   check_syntax / run_tests
+```
+
+1. **Linter findings go to the LLM agents.** The orchestrator runs static analysis first and
+   passes its findings to the other agents (a temporary JSON file named in
+   `CODE_REVIEW_LINT_RESULTS`). Run on its own, an agent runs the linters itself.
+2. **Tools through function calling.** The test generator and the correction agent work in a
+   loop: the model calls tools (`agents/tools.py`), reads their results, fixes its work and
+   finishes by calling a `submit_*` function. A correction is refused (and the reason sent back)
+   when it does not compile, removes a public function or class, or has more linter findings
+   than the original. The final result is checked again by the agent and reported in
+   `verification` (numbers from the tools, not from the model). Providers without function
+   calling get one structured answer instead, with the same checks.
+3. **Parallel.** The five LLM agents are independent, so they run at the same time
+   (`LLM_MAX_PARALLEL`, default 5), in the CLI and in the dashboard.
+4. **Structured outputs.** Every LLM answer is JSON validated against a schema
+   (`response_format=json_schema`, falling back to `json_object` and then to plain text for
+   providers that do not support it; one repair round trip when the JSON does not match).
+
+Tests are run with pytest in a temporary folder, in a separate process, with a timeout and
+without the API key or other environment variables. For a file inside a package, a copy of the
+package is used so relative imports work; the file's third-party dependencies must be installed.
+`CODE_REVIEW_ALLOW_EXEC=0` turns test execution off; the public server turns it off unless
+`HORIZON_ALLOW_CODE_EXECUTION=1`.
+
+### MCP server
+
+The same tools are available to any MCP client (Claude Desktop, Claude Code, Cursor...):
+
+```bash
+pip install mcp
+python mcp_server.py        # stdio transport
+```
+
+```json
+{"mcpServers": {"code-review": {"command": "python", "args": ["/path/to/mcp_server.py"]}}}
+```
+
+Tools: `run_pylint`, `run_flake8`, `run_bandit`, `run_radon`, `check_syntax`, `run_tests`.
+
+### Settings
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HF_API_TOKEN` | – | Hugging Face key |
+| `HF_MODEL` | `openai/gpt-oss-20b:groq` | Model (must support function calling for the tool loop) |
+| `HF_STRUCTURED_MODE` | `json_schema` | `json_schema`, `json_object` or `none` |
+| `LLM_MAX_PARALLEL` | `5` | LLM agents run at the same time |
+| `AGENT_TIMEOUT` / `AGENT_TOOL_TIMEOUT` | `120` / `300` | Seconds per agent (tool-loop agents get the second) |
+| `AGENT_MAX_STEPS` | `8` | Model turns in a tool loop |
+| `TEST_TIMEOUT` | `60` | Seconds for one test run |
+| `CODE_REVIEW_ALLOW_EXEC` | `1` | `0` disables `run_tests` |
+
+### Evaluation
+
+`eval/run_eval.py` runs the pipeline on 20 files from 5 public repositories (psf/requests,
+pallets/click, pallets/itsdangerous, httpie/cli, tqdm/tqdm; 4 files each, chosen
+deterministically) and checks the outputs with tools: success and schema validity per agent,
+whether the correction compiles, keeps the public names and reduces linter findings, whether
+the generated tests pass, wall time against the sum of agent times.
+
+```bash
+python eval/run_eval.py             # with your HF_API_TOKEN: real quality numbers
+python eval/run_eval.py --fake      # no key: scripted fake model, checks the plumbing only
+```
+
+Reports go to `eval/results/`. With `--fake` the quality numbers mean nothing (the fake model
+only adds a module docstring and writes an import test).
+
+Tests: `python -m unittest discover tests` (no key or network; the model is faked).
 
 ## Extending the System
 
@@ -164,7 +241,7 @@ agent: static_analysis
 - The LLM-powered agents require an API key for the Hugging Face Inference Providers (or a local LLM server).
 - Without a valid API token or network access to the API, these agents will fall back to returning explanatory error messages.
 - The static analysis agent does not require an API key and works offline once its dependencies are installed.
-- For best results, ensure you have a valid Hugging Face token and network access to `api-inference.huggingface.co`.
+- For best results, ensure you have a valid Hugging Face token and network access to `router.huggingface.co`.
 - Note: The code correction agent has been fixed to properly import its dependencies. Ensure you have set the HF_API_TOKEN environment variable for the LLM-powered agents to work.
 
 ## License

@@ -67,11 +67,22 @@ export function KeyForm({ compact }: { compact?: boolean }) {
           {error}
         </p>
       )}
-      <p className="muted reviewform__note">
-        Create a free key at huggingface.co/settings/tokens (read access is enough). It is kept only
-        in this browser and sent with each review over HTTPS. The server uses it for that run and
-        does not store it. Your code is sent to Hugging Face with your key.
-      </p>
+      {compact ? (
+        <p className="muted reviewform__note">
+          Create a free key with read access at{' '}
+          <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer">
+            huggingface.co/settings/tokens
+          </a>
+          . It stays in this browser and is used only for your reviews; the server does not store
+          it.
+        </p>
+      ) : (
+        <p className="muted reviewform__note">
+          Create a free key at huggingface.co/settings/tokens (read access is enough). It is kept
+          only in this browser and sent with each review over HTTPS. The server uses it for that run
+          and does not store it. Your code is sent to Hugging Face with your key.
+        </p>
+      )}
       <div className="actions">
         <button type="submit" className="btn btn--primary" disabled={!key && !hasKey}>
           Save key
@@ -215,12 +226,12 @@ export function ReviewForm({ onStarted }: { onStarted?: () => void }) {
       )}
       <p className="muted reviewform__note">
         {upload
-          ? 'The agents run one after another on this code. The model-based agents send it to Hugging Face with your key; static analysis stays on the server and never runs your code.'
-          : 'The agents run one after another on this file. The model-based agents send its contents to the Hugging Face API configured in your .env; static analysis stays local.'}
+          ? 'Static analysis runs first on the server, then the five model-based agents run at the same time and send the code to Hugging Face with your key.'
+          : 'Static analysis runs first, then the five model-based agents run at the same time and send the file to the Hugging Face API configured in your .env.'}
       </p>
       {upload && !hasKey && (
         <p className="reviewform__error" role="status">
-          Add your Hugging Face key first (Settings, or the form on this page).
+          Save your Hugging Face key first.
         </p>
       )}
       <button
@@ -259,27 +270,6 @@ export function NewReview() {
           </div>
         </div>
       )}
-    </div>
-  )
-}
-
-/** Shown by a live backend before the first review exists. */
-export function FirstRun() {
-  const { repoLabel, submitMode, hasKey } = useApp()
-  return (
-    <div className="boot">
-      <div className="boot__card firstrun">
-        <div>
-          <h2>No reviews yet</h2>
-          <p className="muted">
-            {submitMode === 'upload'
-              ? 'Paste or upload some Python code and the agents review it, step by step. You bring your own Hugging Face key.'
-              : `Connected to ${repoLabel.replace('Live · ', '')}. Pick a file to run your agents on; Horizon shows each run as it happens.`}
-          </p>
-          {submitMode === 'upload' && !hasKey && <KeyForm compact />}
-          <ReviewForm />
-        </div>
-      </div>
     </div>
   )
 }

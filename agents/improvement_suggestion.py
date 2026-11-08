@@ -1,133 +1,86 @@
 #!/usr/bin/env python3
 """
-Improvement Suggestion Agent for the Code Review & Improvement System.
-Uses Hugging Face Inference API to suggest code improvements.
+Improvement Suggestion Agent: refactorings, best practices, performance and security fixes.
+
+Input: the file and the linter findings, so suggestions build on verified tool output
+instead of guessing (and can say which finding they address).
+Output (structured JSON, validated against SCHEMA):
+    {"improvements": [{"line", "category", "severity", "description", "related_findings"}]}
 """
 
-import json
 import os
 import sys
-import time
-from typing import Dict, List, Any, Optional
-from dotenv import load_dotenv
+from typing import Any, Dict
 
-# Add the project root to the Python path so we can import from agents module
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from agents.hf_client import generate_text
+# pylint: disable=wrong-import-position
+from agents.common import lint_section, load_lint, numbered, run_agent_cli  # noqa: E402
+from agents.hf_client import generate_json  # noqa: E402
 
-load_dotenv()  # Load environment variables from .env file
+CATEGORIES = ["bug", "security", "performance", "readability", "maintainability", "style",
+              "testing", "other"]
 
-def suggest_improvements(code: str) -> Dict[str, Any]:
-    """
-    Suggest improvements for the given code.
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "improvements": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "line": {"type": ["integer", "null"],
+                             "description": "Line the change applies to, or null for the whole file."},
+                    "category": {"type": "string", "enum": CATEGORIES},
+                    "severity": {"type": "string", "enum": ["high", "medium", "low"]},
+                    "description": {"type": "string", "minLength": 1,
+                                    "description": "What to change and why, concretely."},
+                    "related_findings": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Linter codes this addresses (e.g. W0612, B105), or []."},
+                },
+                "required": ["line", "category", "severity", "description", "related_findings"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["improvements"],
+    "additionalProperties": False,
+}
 
-    Args:
-        code: The source code to analyze
+SYSTEM = ("You are a senior Python reviewer. Suggest changes that make a real difference "
+          "(correctness and security first), each specific enough to act on.")
 
-    Returns:
-        Dictionary with improvement suggestions
-    """
-    prompt = f"""You are an AI that suggests code improvements. Given the following code, provide:
-1. A list of specific improvements (refactoring, best practices, performance, etc.)
-2. For each improvement, provide the line number (if applicable) and a description.
 
-Format your response exactly as:
+def suggest_improvements(code: str, file_path: str = "module.py") -> Dict[str, Any]:
+    """Suggest improvements. Returns the SCHEMA fields plus ``lint_source``."""
+    findings, source = load_lint(code, file_path)
+    prompt = f"""Review the Python file `{os.path.basename(file_path)}` and list improvements:
+bugs, security problems, refactorings, performance, readability and best practices.
 
-IMPROVEMENTS:
-- [line number]: [description]
-- [line number]: [description]
+- Start from the linter findings below: group related ones into one suggestion and put their
+  codes in `related_findings`. Do not repeat trivial style findings one by one.
+- Add what the linters cannot see (logic bugs, design, naming, missing error handling).
+- Use the line numbers shown on the left; `line` is null for file-wide suggestions.
+- Order from most to least important.
 
-If there are no improvements, write 'None' under IMPROVEMENTS.
+{lint_section(findings)}
 
-Code:
-{code}
+Code (line numbers on the left are not part of the code):
+{numbered(code)}
 """
-
-    try:
-        response = generate_text(prompt, max_tokens=500, temperature=0.2, top_p=0.95)
-        return parse_improvements_response(response)
-    except Exception as e:
-        return {
-            "improvements": [],
-            "error": True,
-            "detail": str(e),
-            "note": "Unable to generate suggestions due to API connectivity issues. Please check your network connection and HF_API_TOKEN."
-        }
-
-def parse_improvements_response(response: str) -> Dict[str, Any]:
-    """Parse the structured response from the LLM."""
-    improvements = []
-
-    # Split by sections
-    if "IMPROVEMENTS:" in response:
-        parts = response.split("IMPROVEMENTS:")
-        sections_part = parts[1].strip()
-        if sections_part and sections_part != "None":
-            lines = sections_part.split('\n')
-            for line in lines:
-                line = line.strip()
-                if line.startswith('-'):
-                    # Parse "- [line number]: [description]"
-                    content = line[1:].strip()
-                    if ':' in content:
-                        line_part, description = content.split(':', 1)
-                        line_num_str = line_part.strip()
-                        description = description.strip()
-                        try:
-                            line_num = int(line_num_str)
-                            improvements.append({
-                                "line": line_num,
-                                "description": description
-                            })
-                        except ValueError:
-                            # If line number isn't an integer, skip or handle differently
-                            pass
-    # If no improvements section or none found, return empty list
-
-    return {
-        "improvements": improvements
-    }
-
-def analyze_file(file_path: str) -> Dict[str, Any]:
-    """
-    Analyze a source code file for improvement suggestions.
-
-    Args:
-        file_path: Path to the source code file
-
-    Returns:
-        Analysis results in dictionary format
-    """
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            code = f.read()
-    except IOError as e:
-        return {
-            "file": file_path,
-            "error": f"Could not read file: {str(e)}",
-            "agent": "improvement_suggestion",
-            "timestamp": time.time()
-        }
-
-    result = suggest_improvements(code)
-    result.update({
-        "file": file_path,
-        "agent": "improvement_suggestion",
-        "timestamp": time.time()
-    })
-
+    result = generate_json(prompt, SCHEMA, name="improvements", system=SYSTEM, max_tokens=2000)
+    known = {str(f.get("code")) for f in findings if f.get("code")}
+    for item in result["improvements"]:
+        item["related_findings"] = [c for c in item["related_findings"] if c in known]
+    result["lint_source"] = source
     return result
 
-def main():
-    """Main entry point for the agent."""
-    if len(sys.argv) < 2:
-        print("Usage: python improvement_suggestion.py <file_path>")
-        sys.exit(1)
 
-    file_path = sys.argv[1]
-    result = analyze_file(file_path)
-    print(json.dumps(result, indent=2))
+def analyze(code: str, file_path: str) -> Dict[str, Any]:
+    """Agent entry point."""
+    return suggest_improvements(code, file_path)
+
 
 if __name__ == "__main__":
-    main()
+    run_agent_cli("improvement_suggestion", analyze)

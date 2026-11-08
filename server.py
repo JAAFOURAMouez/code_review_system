@@ -33,6 +33,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import threading
 import time
 from http import HTTPStatus
@@ -61,6 +62,30 @@ MAX_STREAMS = int(os.getenv("HORIZON_MAX_STREAMS", "100"))
 SESSION_RE = re.compile(r"[A-Za-z0-9_-]{22,64}")
 TOKEN_RE = re.compile(r"[\x21-\x7e]{8,200}")
 MODEL_RE = re.compile(r"[A-Za-z0-9_.:/-]{1,100}")
+LLM_MAX_PARALLEL = int(os.getenv("LLM_MAX_PARALLEL", "5"))
+LINT_ENV = "CODE_REVIEW_LINT_RESULTS"
+# Agent settings passed through to the agents in public mode (no secrets).
+AGENT_ENV_KEYS = ("HF_MIN_TOKENS", "HF_REASONING_EFFORT", "HF_STRUCTURED_MODE", "HF_REQUEST_TIMEOUT",
+                  "AGENT_TIMEOUT", "AGENT_TOOL_TIMEOUT", "AGENT_MAX_STEPS", "TEST_TIMEOUT",
+                  "LINTER_TIMEOUT")
+
+
+def needs_lint(agent: dict[str, Any]) -> bool:
+    """Agents that run after static analysis and receive its findings (all but the linters)."""
+    return bool(agent.get("needs_lint", agent.get("name") != "static_analysis"))
+
+
+def write_lint_file(run: dict[str, Any]) -> str | None:
+    """Save this run's static analysis findings for the LLM agents; None when there are none
+    (the agents then run the linters themselves)."""
+    rec = run["agents"].get("static_analysis") or {}
+    findings = (rec.get("result") or {}).get("findings") if rec.get("status") == "ok" else None
+    if not isinstance(findings, list):
+        return None
+    fd, path = tempfile.mkstemp(prefix="review_lint_", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump({"file": run.get("file"), "findings": findings}, f)
+    return path
 
 
 def now_ms() -> int:
@@ -201,8 +226,10 @@ class ReviewService:
             return None
         env = {k: os.environ[k] for k in ("PATH", "LANG", "LC_ALL") if k in os.environ}
         env.update(HF_API_TOKEN=token or "", HF_MODEL=model, PYTHONIOENCODING="utf-8",
-                   PYTHONDONTWRITEBYTECODE="1", HOME=str(self.work_dir))
-        for k in ("HF_MIN_TOKENS", "HF_REASONING_EFFORT", "AGENT_TIMEOUT"):
+                   PYTHONDONTWRITEBYTECODE="1", HOME=str(self.work_dir),
+                   # Running the visitors' code (generated tests) is off unless explicitly allowed.
+                   CODE_REVIEW_ALLOW_EXEC="1" if os.getenv("HORIZON_ALLOW_CODE_EXECUTION") == "1" else "0")
+        for k in AGENT_ENV_KEYS:
             if k in os.environ:
                 env[k] = os.environ[k]
         return env
@@ -310,10 +337,34 @@ class ReviewService:
 
     def _execute(self, run: dict[str, Any], indices: list[int], token: str | None,
                  model: str) -> None:
+        lint_path: str | None = None
         try:
-            for i in indices:
+            # 1. static analysis first; 2. the LLM agents, which are independent, in parallel,
+            # each given the findings of step 1.
+            first = [i for i in indices if not needs_lint(self.agents[i])]
+            rest = [i for i in indices if needs_lint(self.agents[i])]
+            for i in first:
                 self._run_one(run, i, token, model)
+            if rest:
+                with self.lock:
+                    lint_path = write_lint_file(run)
+                slots = threading.BoundedSemaphore(max(1, LLM_MAX_PARALLEL))
+
+                def worker(i: int) -> None:
+                    with slots:
+                        self._run_one(run, i, token, model, lint_path)
+
+                threads = [threading.Thread(target=worker, args=(i,), daemon=True) for i in rest]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
         finally:
+            if lint_path:
+                try:
+                    os.remove(lint_path)
+                except OSError:
+                    pass
             with self.lock:
                 if all(r["status"] in ("ok", "failed") for r in run["agents"].values()):
                     run["endedAt"] = self.clock()
@@ -322,7 +373,8 @@ class ReviewService:
                 self._bump()
             self._release()
 
-    def _run_one(self, run: dict[str, Any], index: int, token: str | None, model: str) -> None:
+    def _run_one(self, run: dict[str, Any], index: int, token: str | None, model: str,
+                 lint_path: str | None = None) -> None:
         agent = self.agents[index]
         name = agent["name"]
         desc = agent.get("description", name)
@@ -336,7 +388,11 @@ class ReviewService:
             self._bump()
         started = time.monotonic()
         try:
-            result = self._run_agent(agent, run.get("path") or run["file"], self._env(token, model))
+            env = self._env(token, model)
+            if lint_path:
+                env = dict(os.environ if env is None else env)
+                env[LINT_ENV] = lint_path
+            result = self._run_agent(agent, run.get("path") or run["file"], env)
         except Exception as e:  # the orchestrator already catches most failures
             result = {"error": True, "exception": str(e)}
         duration = int((time.monotonic() - started) * 1000)
