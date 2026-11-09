@@ -59,6 +59,7 @@ This system consists of five specialized agents that work together to analyze co
 - `agents/documentation_agent.py` - LLM-powered documentation agent
 - `agents/code_correction_agent.py` - LLM-powered code correction agent, checks its candidates with the tools
 - `agents/tools.py` - Tools for the LLM agents and the MCP server (linters, syntax check, test runner)
+- `agents/flow.py` - Agent dependencies (`depends_on`) and the file agents use to hand results to each other
 - `agents/hf_client.py` - LLM client: structured JSON output and the function-calling loop
 - `orchestrator.py` - Runs static analysis, then the LLM agents in parallel, and aggregates results
 - `mcp_server.py` - MCP server exposing the tools
@@ -170,9 +171,23 @@ agent: static_analysis
    than the original. The final result is checked again by the agent and reported in
    `verification` (numbers from the tools, not from the model). Providers without function
    calling get one structured answer instead, with the same checks.
-3. **Parallel.** The five LLM agents are independent, so they run at the same time
-   (`LLM_MAX_PARALLEL`, default 5), in the CLI and in the dashboard.
-4. **Structured outputs.** Every LLM answer is JSON validated against a schema
+3. **Parallel, with dependencies.** The LLM agents run at the same time (`LLM_MAX_PARALLEL`,
+   default 5), in the CLI and in the dashboard, except that an agent can declare
+   `depends_on` in `orchestrator.AGENTS` and starts once the agents it names have finished
+   (`agents/flow.py`). The correction agent depends on the test generator, so in the diagram above
+   it starts when `test_generator` ends while the other three keep running.
+4. **Agents exchange results.** The test generator's tests, and how each one fares on the
+   original file, are handed to the correction agent in a small JSON file
+   (`CODE_REVIEW_SHARED`, like the linter findings). The correction agent can run them with
+   `run_shared_tests`, is told which ones fail on the original (possible bugs to fix), and a
+   candidate is **refused when it breaks a test that passed on the original**. `verification.tests`
+   in its result lists the `regressions`, the tests it `fixed` and the ones `still_failing` (these
+   never block a fix, since a generated test can be wrong). Without the tests (agent run on its
+   own, generator failed, `CODE_REVIEW_ALLOW_EXEC=0`) the other checks apply and
+   `verification.tests.reason` says why. Per-test outcomes need pytest; without it only "all
+   passed before, not now" is detected. Re-running the correction agent alone in the dashboard
+   reuses the generator's stored result.
+5. **Structured outputs.** Every LLM answer is JSON validated against a schema
    (`response_format=json_schema`, falling back to `json_object` and then to plain text for
    providers that do not support it; one repair round trip when the JSON does not match).
 

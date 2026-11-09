@@ -10,6 +10,9 @@ reported in ``verification`` (so the numbers come from pytest, not from the mode
 When running code is disabled (``CODE_REVIEW_ALLOW_EXEC=0``) the model only gets the syntax
 check, and ``verification`` says the tests were not run.
 
+The orchestrator hands the submitted tests, and how each one fares on the original file
+(``verification["cases"]``), to the correction agent.
+
 Output: {"tests", "framework", "notes", "verification", "tool_calls"}
 """
 
@@ -74,11 +77,14 @@ def _verify(code: str, tests_code: str, module: str,
         return {"ran": False, "syntax_valid": False, "syntax": syntax}
     if not tools.execution_allowed():
         return {"ran": False, "syntax_valid": True, "reason": "code execution is disabled"}
-    res = tools.run_tests(code, tests_code, module, context)
+    res = tools.run_tests(code, tests_code, module, context, with_cases=True)
     if res.get("status") != "ok":
         return {"ran": False, "syntax_valid": True, "reason": res.get("message") or res.get("status")}
     keys = ("runner", "passed", "tests", "failures", "errors", "skipped", "output")
-    return {"ran": True, "syntax_valid": True, **{k: res[k] for k in keys}}
+    # ``cases`` (outcome of each test on the original file) is what the correction agent
+    # compares its fix against.
+    return {"ran": True, "syntax_valid": True, **{k: res[k] for k in keys},
+            "cases": res.get("cases")}
 
 
 def generate_tests(code: str, file_path: str = "module.py") -> Dict[str, Any]:

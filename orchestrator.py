@@ -7,9 +7,12 @@ Pipeline for one file:
 1. The static analysis agent runs first (pylint, flake8, bandit, radon).
 2. Its findings are written to a temporary JSON file whose path is given to the other agents
    in ``CODE_REVIEW_LINT_RESULTS``, so every LLM agent works from verified tool output.
-3. The LLM agents are independent of each other, so they run in parallel
-   (``LLM_MAX_PARALLEL``, default 5). The test generator and the correction agent call tools
-   (linters, tests) in a loop and get a longer timeout (``AGENT_TOOL_TIMEOUT``).
+3. The LLM agents run in parallel (``LLM_MAX_PARALLEL``, default 5), except that an agent
+   with ``depends_on`` waits for the agents it names. The correction agent waits for the test
+   generator: the tests are handed over in a file named in ``CODE_REVIEW_SHARED`` and the
+   correction is refused when it breaks a test that passed on the original file. The test
+   generator and the correction agent call tools (linters, tests) in a loop and get a longer
+   timeout (``AGENT_TOOL_TIMEOUT``).
 
 Each agent is a separate process that prints one JSON object. Results are returned in the
 order of ``AGENTS``.
@@ -21,10 +24,11 @@ import subprocess
 import sys
 import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
+
+from agents import flow
 
 load_dotenv()  # Load environment variables from .env file
 
@@ -77,6 +81,8 @@ AGENTS = [
         "description": "Code Correction Agent",
         "needs_lint": True,
         "uses_tools": True,
+        # Receives the generated tests and must not break the ones that passed.
+        "depends_on": ["test_generator"],
     },
 ]
 
@@ -185,8 +191,9 @@ def run_pipeline(
     on_result: Optional[Callable[[Dict[str, Any], Dict[str, Any], float], None]] = None,
     max_parallel: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """Run static analysis, then the LLM agents in parallel. Returns results in agent order.
-    ``on_result(agent, result, seconds)`` is called as each agent finishes."""
+    """Run static analysis, then the LLM agents in parallel (an agent with ``depends_on`` starts
+    once the agents it names have finished and receives their results). Returns results in
+    agent order. ``on_result(agent, result, seconds)`` is called as each agent finishes."""
     agents = AGENTS if agents is None else agents
     max_parallel = max_parallel or int(os.getenv("LLM_MAX_PARALLEL", "5"))
     results: Dict[int, Dict[str, Any]] = {}
@@ -207,18 +214,34 @@ def run_pipeline(
         one(i, env)
     static = next((results[i] for i in first if agents[i]["name"] == "static_analysis"), None)
     lint_path = write_lint_file(static)
+    lint_env = env_with_lint(env, lint_path)
+
+    def with_dependencies(i: int) -> None:
+        shared_path = None
+        agent_env = lint_env
+        if flow.dependencies(agents[i]):
+            done = {agents[j]["name"]: r for j, r in list(results.items())}
+            shared_path = flow.write_shared_file(done)
+            agent_env = flow.env_with_shared(lint_env, shared_path)
+        try:
+            one(i, agent_env)
+        finally:
+            _remove(shared_path)
+
     try:
-        agent_env = env_with_lint(env, lint_path)
-        with ThreadPoolExecutor(max_workers=max(1, min(max_parallel, len(rest) or 1))) as pool:
-            for future in [pool.submit(one, i, agent_env) for i in rest]:
-                future.result()
+        flow.schedule(agents, rest, with_dependencies, max_parallel)
     finally:
-        if lint_path:
-            try:
-                os.remove(lint_path)
-            except OSError:
-                pass
+        _remove(lint_path)
     return [results[i] for i in range(len(agents))]
+
+
+def _remove(path: Optional[str]) -> None:
+    """Delete a temporary file, ignoring a missing one."""
+    if path:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 def save_corrected_code(result: Dict[str, Any]) -> Optional[str]:
@@ -270,7 +293,8 @@ def main():
 
     print(f"Running Code Review & Improvement System on {file_path}")
     print("=" * 60)
-    print("Static analysis first, then the LLM agents in parallel...")
+    print("Static analysis first, then the LLM agents in parallel "
+          "(the correction waits for the generated tests)...")
 
     def report(agent, result, seconds):
         status = "Completed with errors" if result.get("error") else "Completed successfully"

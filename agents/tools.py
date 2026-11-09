@@ -223,6 +223,46 @@ def _junit_counts(path: str) -> Optional[Dict[str, int]]:
     return total
 
 
+def _junit_cases(path: str) -> Optional[Dict[str, str]]:
+    """Outcome of each test (``passed``, ``failed``, ``error`` or ``skipped``) by test id, from
+    a pytest junit file."""
+    try:
+        root = ET.parse(path).getroot()
+    except (ET.ParseError, OSError):
+        return None
+    cases: Dict[str, str] = {}
+    for case in root.iter("testcase"):
+        classname, name = case.get("classname") or "", case.get("name") or ""
+        if case.find("failure") is not None:
+            outcome = "failed"
+        elif case.find("error") is not None:
+            outcome = "error"
+        elif case.find("skipped") is not None:
+            outcome = "skipped"
+        else:
+            outcome = "passed"
+        cases[f"{classname}::{name}" if classname else name] = outcome
+    return cases
+
+
+def compare_runs(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, List[str]]:
+    """Compare two ``run_tests(..., with_cases=True)`` results of the same tests on two versions
+    of the code. ``regressions`` passed before and do not pass now, ``fixed`` did not pass before
+    and pass now, ``still_failing`` did not pass in either. Without per-test outcomes (no
+    pytest), only "all passed before, not now" can be told."""
+    old, new = before.get("cases"), after.get("cases")
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        regressed = bool(before.get("passed")) and not after.get("passed")
+        return {"regressions": ["(all tests)"] if regressed else [], "fixed": [],
+                "still_failing": []}
+    bad = ("failed", "error")
+    return {
+        "regressions": sorted(t for t, s in old.items() if s == "passed" and new.get(t) != "passed"),
+        "fixed": sorted(t for t, s in old.items() if s in bad and new.get(t) == "passed"),
+        "still_failing": sorted(t for t, s in old.items() if s in bad and new.get(t) != "passed"),
+    }
+
+
 def _unittest_counts(output: str) -> Dict[str, int]:
     ran = re.search(r"Ran (\d+) tests?", output)
     out = {"tests": int(ran.group(1)) if ran else 0, "failures": 0, "errors": 0, "skipped": 0}
@@ -234,11 +274,12 @@ def _unittest_counts(output: str) -> Dict[str, int]:
 
 
 def run_tests(code: str, tests: str, module: str = "module_under_test",
-              context: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+              context: Optional[Dict[str, str]] = None, with_cases: bool = False) -> Dict[str, Any]:
     """Run ``tests`` against ``code``. Standalone: the code is saved as ``<module>.py``. With a
     ``context`` from ``package_context``, a copy of the whole package is made and the code
     replaces the file in it, so relative imports work and tests import ``context["module"]``.
-    Returns pass/fail counts and the end of the test output."""
+    Returns pass/fail counts and the end of the test output; with ``with_cases`` also the
+    outcome of each test (``cases``, None without pytest)."""
     if not execution_allowed():
         return {"tool": "run_tests", "status": "disabled",
                 "message": "Running code is disabled on this server (CODE_REVIEW_ALLOW_EXEC=0)."}
@@ -277,8 +318,9 @@ def run_tests(code: str, tests: str, module: str = "module_under_test",
                     "message": f"The tests did not finish within {TEST_TIMEOUT}s."}
         output = (proc.stdout + "\n" + proc.stderr).replace(tmp + os.sep, "")
         stats = (_junit_counts(junit) if use_pytest else None) or _unittest_counts(output)
+        cases = _junit_cases(junit) if use_pytest and with_cases else None
     passed = proc.returncode == 0 and stats["tests"] > 0
-    return {
+    result = {
         "tool": "run_tests",
         "status": "ok",
         "runner": "pytest" if use_pytest else "unittest",
@@ -287,6 +329,9 @@ def run_tests(code: str, tests: str, module: str = "module_under_test",
         "exit_code": proc.returncode,
         "output": output.strip()[-MAX_OUTPUT_CHARS:],
     }
+    if with_cases:
+        result["cases"] = cases
+    return result
 
 
 # ------------------------------------------------------------------ function-calling specs
@@ -358,6 +403,18 @@ def tests_tool_for_fixed_code(code: str, module: str,
         _params(tests=f"Test file content. Import the code with `from {module} import ...`."),
         lambda tests: run_tests(code, tests, module, context),
     )
+
+
+def shared_tests_tool(run: Callable[[str], Dict[str, Any]]) -> Tool:
+    """``run_shared_tests``: runs the tests another agent wrote against a candidate (the
+    correction agent gets the test generator's tests this way). ``run`` takes the code."""
+    return Tool(
+        "run_shared_tests",
+        "Run the tests written by the test generator against your candidate code. Reports "
+        "`regressions` (tests that pass on the original file and fail on your candidate: a "
+        "submission with any is refused), `fixed` (failing on the original, passing on your "
+        "candidate) and `still_failing`.",
+        _params(code=CODE_PARAM), lambda code: run(code))
 
 
 def to_json(result: Any) -> str:

@@ -43,6 +43,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 import horizon_adapter as ad
+from agents import flow
 
 ROOT = Path(__file__).resolve().parent
 STATE_DIR_NAME = ".horizon"
@@ -86,6 +87,22 @@ def write_lint_file(run: dict[str, Any]) -> str | None:
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump({"file": run.get("file"), "findings": findings}, f)
     return path
+
+
+def finished_results(run: dict[str, Any]) -> dict[str, Any]:
+    """The results of this run's agents that finished successfully, by agent name: what an
+    agent that depends on them receives."""
+    return {name: rec["result"] for name, rec in run["agents"].items()
+            if rec.get("status") == "ok" and isinstance(rec.get("result"), dict)}
+
+
+def remove_file(path: str | None) -> None:
+    """Delete a temporary file, ignoring a missing one."""
+    if path:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 def now_ms() -> int:
@@ -337,8 +354,9 @@ class ReviewService:
                  model: str) -> None:
         lint_path: str | None = None
         try:
-            # 1. static analysis first; 2. the LLM agents, which are independent, in parallel,
-            # each given the findings of step 1.
+            # 1. static analysis first; 2. the LLM agents in parallel, each given the findings
+            # of step 1. An agent with ``depends_on`` (the correction agent) starts once the
+            # agents it names have finished and also receives their results.
             first = [i for i in indices if not needs_lint(self.agents[i])]
             rest = [i for i in indices if needs_lint(self.agents[i])]
             for i in first:
@@ -346,23 +364,20 @@ class ReviewService:
             if rest:
                 with self.lock:
                     lint_path = write_lint_file(run)
-                slots = threading.BoundedSemaphore(max(1, LLM_MAX_PARALLEL))
 
                 def worker(i: int) -> None:
-                    with slots:
-                        self._run_one(run, i, token, model, lint_path)
+                    shared_path: str | None = None
+                    if flow.dependencies(self.agents[i]):
+                        with self.lock:
+                            shared_path = flow.write_shared_file(finished_results(run))
+                    try:
+                        self._run_one(run, i, token, model, lint_path, shared_path)
+                    finally:
+                        remove_file(shared_path)
 
-                threads = [threading.Thread(target=worker, args=(i,), daemon=True) for i in rest]
-                for t in threads:
-                    t.start()
-                for t in threads:
-                    t.join()
+                flow.schedule(self.agents, rest, worker, LLM_MAX_PARALLEL)
         finally:
-            if lint_path:
-                try:
-                    os.remove(lint_path)
-                except OSError:
-                    pass
+            remove_file(lint_path)
             with self.lock:
                 if all(r["status"] in ("ok", "failed") for r in run["agents"].values()):
                     run["endedAt"] = self.clock()
@@ -376,7 +391,7 @@ class ReviewService:
             self._release()
 
     def _run_one(self, run: dict[str, Any], index: int, token: str | None, model: str,
-                 lint_path: str | None = None) -> None:
+                 lint_path: str | None = None, shared_path: str | None = None) -> None:
         agent = self.agents[index]
         name = agent["name"]
         tid = ad.task_id(run["id"], index)
@@ -393,6 +408,7 @@ class ReviewService:
             if lint_path:
                 env = dict(os.environ if env is None else env)
                 env[LINT_ENV] = lint_path
+            env = flow.env_with_shared(env, shared_path)
             result = self._run_agent(agent, run.get("path") or run["file"], env)
         except Exception as e:  # the orchestrator already catches most failures
             result = {"error": True, "exception": str(e)}

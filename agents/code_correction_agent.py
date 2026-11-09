@@ -7,9 +7,17 @@ Code Correction Agent: returns a corrected version of the file, checked with the
    ``run_bandit``, ``run_radon``, ``check_syntax`` and ``run_tests`` on its candidate, until it
    calls ``submit_correction``.
 3. A submission is refused (and the reasons sent back to the model) when it does not compile,
-   drops a public function or class, or has more linter findings than the original.
+   drops a public function or class, has more linter findings than the original, or breaks a
+   test that passed on the original.
 4. The accepted code is checked once more by this agent, and the before/after numbers are
-   reported in ``verification``: they come from the linters, not from the model.
+   reported in ``verification``: they come from the linters and from pytest, not from the model.
+
+The tests come from the test generator: the orchestrator runs it first and hands over its tests
+and how each one fares on the original file (``CODE_REVIEW_SHARED``, see ``agents/flow.py``).
+The model can run them with ``run_shared_tests``. Tests that fail on the original are possible
+bugs to fix; they are reported as ``fixed`` or ``still_failing`` but never block a submission,
+since a test can be wrong. Without those tests (agent run on its own, test generator failed,
+execution disabled) the other checks apply and ``verification["tests"]`` says why.
 
 When the provider has no function calling, the agent asks for one structured answer and still
 runs the same checks.
@@ -20,12 +28,12 @@ Output: {"corrected_code", "changes", "remaining_issues", "verification", "tool_
 import os
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # pylint: disable=wrong-import-position
-from agents import tools  # noqa: E402
+from agents import flow, tools  # noqa: E402
 from agents.common import lint_section, load_lint, run_agent_cli  # noqa: E402
 from agents.hf_client import LLMError, ToolsUnsupported, generate_json, run_tool_loop  # noqa: E402
 from agents.schema import normalize_code  # noqa: E402
@@ -66,10 +74,61 @@ def total(counts: Dict[str, int]) -> int:
     return sum(counts.values())
 
 
+def make_oracle(code: str, module: str,
+                context: Optional[Dict[str, str]]) -> Tuple[Optional[Dict[str, Any]], str]:
+    """(oracle, reason): the test generator's tests with how each one fares on the original
+    file, to check candidates against. The oracle is None, with the reason, when the tests are
+    missing or protect nothing."""
+    entry = flow.load_shared().get("tests")
+    if not isinstance(entry, dict) or not entry.get("code"):
+        return None, "no tests from the test generator"
+    if not tools.execution_allowed():
+        return None, "code execution is disabled"
+    if entry.get("module") != module:
+        return None, "the tests target another module name"
+    baseline = entry.get("baseline") or {}
+    output = baseline.get("output") or ""
+    if not baseline.get("ran") or "cases" not in baseline:
+        res = tools.run_tests(code, entry["code"], module, context, with_cases=True)
+        if res.get("status") != "ok":
+            return None, f"the tests could not run on the original file ({res.get('status')})"
+        baseline, output = res, res.get("output") or ""
+    cases = baseline.get("cases")
+    protects = (any(s == "passed" for s in cases.values()) if isinstance(cases, dict)
+                else bool(baseline.get("passed")))
+    if not protects:
+        return None, "no test passed on the original file"
+    return {"code": entry["code"], "module": module, "context": context,
+            "baseline": {k: baseline.get(k) for k in ("passed", "tests", "cases")},
+            "notes": entry.get("notes") or "", "output": output, "cache": {}}, ""
+
+
+def run_oracle(oracle: Dict[str, Any], candidate: str) -> Dict[str, Any]:
+    """Run the shared tests on a candidate and compare with the original (cached per candidate:
+    the loop, the submission check and the final check often see the same code)."""
+    cache = oracle["cache"]
+    if candidate not in cache:
+        res = tools.run_tests(candidate, oracle["code"], oracle["module"], oracle["context"],
+                              with_cases=True)
+        empty: Dict[str, List[str]] = {"regressions": [], "fixed": [], "still_failing": []}
+        if res.get("status") == "ok":
+            cache[candidate] = {"status": "ok", "tests": res["tests"], "passed": res["passed"],
+                                **tools.compare_runs(oracle["baseline"], res),
+                                "output": res["output"][-1500:]}
+        elif res.get("status") == "timeout":
+            cache[candidate] = {"status": "timeout", "message": res.get("message"), **empty,
+                                "regressions": ["(the tests did not finish in time)"]}
+        else:
+            cache[candidate] = {"status": res.get("status"), "message": res.get("message"), **empty}
+    return cache[candidate]
+
+
 def assess(original: str, candidate: str, before: Dict[str, int],
-           name: str = "module.py") -> Dict[str, Any]:
+           name: str = "module.py", oracle: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Check a candidate against the original with the real tools. ``before`` must come from
-    ``tools.lint(original, name=name)`` so both are linted the same way (same folder, name)."""
+    ``tools.lint(original, name=name)`` so both are linted the same way (same folder, name).
+    With an ``oracle`` (``make_oracle``) the candidate must also keep passing the tests that
+    passed on the original."""
     syntax = tools.check_syntax(candidate)
     if not syntax["valid"]:
         return {"syntax_valid": False, "syntax": syntax, "accepted": False,
@@ -86,7 +145,7 @@ def assess(original: str, candidate: str, before: Dict[str, int],
                         f"({total(after)} > {total(before)})")
     if after.get("bandit", 0) > before.get("bandit", 0):
         problems.append("the candidate has more security (bandit) findings than the original")
-    return {
+    report: Dict[str, Any] = {
         "syntax_valid": True,
         "api_preserved": not missing,
         "missing_api": missing,
@@ -95,16 +154,47 @@ def assess(original: str, candidate: str, before: Dict[str, int],
         "total_before": total(before),
         "total_after": total(after),
         "linters": statuses,
-        "accepted": not problems,
-        "problems": problems,
     }
+    if oracle:
+        ran = run_oracle(oracle, candidate)
+        if ran["regressions"]:
+            shown = ", ".join(ran["regressions"][:8])
+            more = len(ran["regressions"]) - 8
+            problems.append("the candidate breaks tests that passed on the original: " + shown
+                            + (f" (and {more} more)" if more > 0 else ""))
+        report["tests"] = {"used": True, "from": "test_generator", "tests": ran.get("tests"),
+                           "passed": ran.get("passed"), "regressions": ran["regressions"],
+                           "fixed": ran["fixed"], "still_failing": ran["still_failing"]}
+    report.update(accepted=not problems, problems=problems)
+    return report
 
 
-def _prompt(code: str, module: str, findings: List[Dict[str, Any]], name: str) -> str:
+def _tests_section(oracle: Dict[str, Any]) -> str:
+    """The prompt section about the tests handed over by the test generator."""
+    cases = oracle["baseline"].get("cases")
+    failing = (sorted(t for t, s in cases.items() if s in ("failed", "error"))
+               if isinstance(cases, dict) else [])
+    parts = ["Tests written by the test generator are available: `run_shared_tests` runs them "
+             "on your candidate. They pass on the original file except those listed below. A "
+             "submission that breaks a test that passed on the original is refused."]
+    if failing:
+        parts.append("Tests that FAIL on the original file (they may expose real bugs: fix the "
+                     "code, not the tests):\n" + "\n".join(f"- {t}" for t in failing[:15]))
+    if oracle["notes"]:
+        parts.append("Notes from the test generator: " + oracle["notes"][:800])
+    if failing and oracle["output"]:
+        parts.append("End of the test output on the original file:\n```\n"
+                     + oracle["output"][-1200:] + "\n```")
+    return "\n\n".join(parts) + "\n\n"
+
+
+def _prompt(code: str, module: str, findings: List[Dict[str, Any]], name: str,
+            oracle: Optional[Dict[str, Any]] = None) -> str:
     tests_line = ("- You may write a few quick tests and call `run_tests` to check the behaviour "
                   "is unchanged (your candidate is importable as "
                   f"`{module}`: `from {module} import ...`).\n"
                   if tools.execution_allowed() else "")
+    shared_tests = _tests_section(oracle) if oracle else ""
     return f"""Correct the Python file `{name}` (module `{module}`) below.
 
 Fix, in this order: bugs, security problems (bandit), errors and warnings (pylint/flake8),
@@ -118,7 +208,7 @@ How to work:
   submission that does not compile, removes a public name or has more findings than the
   original is refused with the reason.
 
-{lint_section(findings)}
+{shared_tests}{lint_section(findings)}
 
 Original code:
 ```python
@@ -139,18 +229,27 @@ def correct_code(code: str, file_path: str = "module.py") -> Dict[str, Any]:
     available = tools.linter_tools()
     if tools.execution_allowed():
         available.append(tools.tests_tool_for_code(module, context))
+    # The tests the test generator wrote, as a check on every candidate.
+    oracle, oracle_reason = make_oracle(code, module, context)
+    if oracle:
+        def run_shared(candidate_code: str) -> Dict[str, Any]:
+            syntax = tools.check_syntax(candidate_code)
+            if not syntax["valid"]:
+                return {"tool": "run_shared_tests", "status": "syntax_error", "syntax": syntax}
+            return {"tool": "run_shared_tests", **run_oracle(oracle, normalize_code(candidate_code))}
+        available.append(tools.shared_tests_tool(run_shared))
     best: Dict[str, Any] = {}
 
     def on_submit(args: Dict[str, Any]) -> List[str]:
         candidate = normalize_code(args["corrected_code"])
-        report = assess(code, candidate, before, name)
+        report = assess(code, candidate, before, name, oracle)
         if report["syntax_valid"] and (not best or report.get("total_after", 1e9)
                                        < best["report"].get("total_after", 1e9)):
             best.update(args=args, report=report)
         return report["problems"]
 
     budget = float(os.getenv("AGENT_TOOL_TIMEOUT", "300"))
-    prompt = _prompt(code, module, findings, name)
+    prompt = _prompt(code, module, findings, name, oracle)
     mode = "tool_loop"
     result: Optional[Dict[str, Any]] = None
     trace: List[Dict[str, Any]] = []
@@ -176,7 +275,9 @@ def correct_code(code: str, file_path: str = "module.py") -> Dict[str, Any]:
             SUBMIT_SCHEMA, name="correction", system=SYSTEM, max_tokens=4000, temperature=0.1)
 
     corrected = normalize_code(result["corrected_code"])
-    verification = assess(code, corrected, before, name)
+    verification = assess(code, corrected, before, name, oracle)
+    if not oracle:
+        verification["tests"] = {"used": False, "reason": oracle_reason}
     out: Dict[str, Any] = {
         "corrected_code": corrected,
         "changes": result.get("changes", []),
