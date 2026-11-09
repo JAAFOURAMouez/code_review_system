@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # pylint: disable=wrong-import-position
 from agents import tools  # noqa: E402
-from agents.common import lint_section, load_lint, run_agent_cli  # noqa: E402
+from agents.common import history_text, lint_section, load_lint, run_agent_cli  # noqa: E402
 from agents.hf_client import LLMError, ToolsUnsupported, generate_json, run_tool_loop  # noqa: E402
 from agents.schema import normalize_code  # noqa: E402
 
@@ -61,7 +61,7 @@ if any, and the installed dependencies are importable).
 - {check}
 - Finish by calling `submit_tests` with the final file.
 
-{lint_section(findings, limit=30)}
+{history_text("test_generator")}{lint_section(findings, limit=30)}
 
 Code of `{module}.py`:
 ```python

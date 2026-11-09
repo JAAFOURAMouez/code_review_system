@@ -44,6 +44,7 @@ from urllib.parse import parse_qs, urlparse
 
 import horizon_adapter as ad
 from agents import flow
+from agents import memory as review_memory
 
 ROOT = Path(__file__).resolve().parent
 STATE_DIR_NAME = ".horizon"
@@ -122,6 +123,7 @@ class ReviewService:
         state_dir: Path | None = None,
         public: bool = False,
         gate: threading.BoundedSemaphore | None = None,
+        memory: review_memory.Memory | None = None,
     ) -> None:
         self.root = root.resolve()
         self.agents = agents
@@ -131,6 +133,10 @@ class ReviewService:
         self.clock = clock
         self.public = public
         self.gate = gate
+        # Memory between reviews (agents/memory.py): only on a local server, where the files
+        # belong to the person running it. A public deployment never stores visitors' code.
+        self.memory = None if public else memory
+        self._histories: dict[str, dict[str, Any] | None] = {}  # the latest review's history
         self.state_dir = (state_dir or self.root / STATE_DIR_NAME).resolve()
         self.state_path = self.state_dir / "runs.json"
         self.work_dir = self.state_dir / "work"
@@ -353,6 +359,7 @@ class ReviewService:
     def _execute(self, run: dict[str, Any], indices: list[int], token: str | None,
                  model: str) -> None:
         lint_path: str | None = None
+        history_path: str | None = None
         try:
             # 1. static analysis first; 2. the LLM agents in parallel, each given the findings
             # of step 1. An agent with ``depends_on`` (the correction agent) starts once the
@@ -361,9 +368,12 @@ class ReviewService:
             rest = [i for i in indices if needs_lint(self.agents[i])]
             for i in first:
                 self._run_one(run, i, token, model)
+            full = any(self.agents[i]["name"] == "static_analysis" for i in first)
             if rest:
                 with self.lock:
                     lint_path = write_lint_file(run)
+                    history = self._history(run, full)
+                history_path = review_memory.write_history_file(history)
 
                 def worker(i: int) -> None:
                     shared_path: str | None = None
@@ -371,16 +381,19 @@ class ReviewService:
                         with self.lock:
                             shared_path = flow.write_shared_file(finished_results(run))
                     try:
-                        self._run_one(run, i, token, model, lint_path, shared_path)
+                        self._run_one(run, i, token, model, lint_path, shared_path, history_path)
                     finally:
                         remove_file(shared_path)
 
                 flow.schedule(self.agents, rest, worker, LLM_MAX_PARALLEL)
         finally:
             remove_file(lint_path)
+            remove_file(history_path)
             with self.lock:
                 if all(r["status"] in ("ok", "failed") for r in run["agents"].values()):
                     run["endedAt"] = self.clock()
+                    self._remember(run, any(self.agents[i]["name"] == "static_analysis"
+                                            for i in indices))
                     outcome = ad.run_outcome(run)
                     status = {"succeeded": "success", "failed": "failed"}.get(outcome, "warning")
                     self._event(run, "system", "review", status, "Review finished",
@@ -390,8 +403,48 @@ class ReviewService:
                 self._bump()
             self._release()
 
+    def _file_path(self, run: dict[str, Any]) -> str:
+        """Where the reviewed file is on disk (a local run stores its path relative to the
+        project folder)."""
+        return str(self.root / (run.get("path") or run["file"]))
+
+    def _static_result(self, run: dict[str, Any]) -> dict[str, Any] | None:
+        rec = run["agents"].get("static_analysis") or {}
+        return rec.get("result") if rec.get("status") == "ok" else None
+
+    def _history(self, run: dict[str, Any], full: bool) -> dict[str, Any] | None:
+        """What earlier reviews of this file found, for the agents of this run. A re-run of one
+        agent reuses the history its review started with (the review itself is stored once it
+        ends, so asking again would compare it with itself). Caller holds the lock."""
+        if self.memory is None:
+            return None
+        if not full:
+            return self._histories.get(run["id"])
+        context = review_memory.review_context(self.memory, self._file_path(run),
+                                               self._static_result(run))
+        history = (self.memory.recall(context["key"], context["hash"], context["findings"])
+                   if context else None)
+        self._histories = {run["id"]: history}
+        if history:
+            self._event(run, "system", "review", "info", "Compared with the last review",
+                        review_memory.describe(history))
+        return history
+
+    def _remember(self, run: dict[str, Any], full: bool) -> None:
+        """Store a review that has just finished (not a re-run of one agent). Caller holds the
+        lock."""
+        if self.memory is None or not full:
+            return
+        context = review_memory.review_context(self.memory, self._file_path(run),
+                                               self._static_result(run))
+        if context:
+            results = [{**rec["result"], "agent": name} for name, rec in run["agents"].items()
+                       if isinstance(rec.get("result"), dict)]
+            self.memory.record(context["key"], context["hash"], context["findings"], results)
+
     def _run_one(self, run: dict[str, Any], index: int, token: str | None, model: str,
-                 lint_path: str | None = None, shared_path: str | None = None) -> None:
+                 lint_path: str | None = None, shared_path: str | None = None,
+                 history_path: str | None = None) -> None:
         agent = self.agents[index]
         name = agent["name"]
         tid = ad.task_id(run["id"], index)
@@ -409,6 +462,7 @@ class ReviewService:
                 env = dict(os.environ if env is None else env)
                 env[LINT_ENV] = lint_path
             env = flow.env_with_shared(env, shared_path)
+            env = review_memory.env_with_history(env, history_path)
             result = self._run_agent(agent, run.get("path") or run["file"], env)
         except Exception as e:  # the orchestrator already catches most failures
             result = {"error": True, "exception": str(e)}
@@ -463,6 +517,9 @@ class ReviewService:
             if rec.get("approved"):
                 return {}
             rec["approved"] = True
+            if self.memory is not None:
+                self.memory.set_verdict(review_memory.file_key(self._file_path(run)),
+                                        name, "approved")
             desc = self.agents[idx].get("description", name)
             self._event(run, "human", "human", "success", f"Approved the result of {desc}",
                         taskId=ad.task_id(run["id"], idx))
@@ -503,9 +560,10 @@ class Hub:
     """Maps a request to the ReviewService it belongs to."""
 
     def __init__(self, root: Path, agents: list[dict[str, str]], run_agent: Callable[..., Any],
-                 model: str, mode: str = "local", clock: Callable[[], int] = now_ms) -> None:
+                 model: str, mode: str = "local", clock: Callable[[], int] = now_ms,
+                 memory: review_memory.Memory | None = None) -> None:
         self.root, self.agents, self.run_agent, self.model = root.resolve(), agents, run_agent, model
-        self.mode, self.clock = mode, clock
+        self.mode, self.clock, self.memory = mode, clock, memory
         self.public = mode == "public"
         self.lock = threading.Lock()
         self.sessions: dict[str, ReviewService] = {}
@@ -517,7 +575,7 @@ class Hub:
 
     def _make(self, state_dir: Path | None) -> ReviewService:
         return ReviewService(self.root, self.agents, self.run_agent, self.model, self.clock,
-                             state_dir, self.public, self.gate)
+                             state_dir, self.public, self.gate, self.memory)
 
     def get(self, session: str | None) -> tuple[ReviewService | None, str | None]:
         if not self.public:
@@ -772,7 +830,8 @@ def main() -> None:
                  "pip install -r requirements.txt")
 
     model = os.getenv("HF_MODEL", DEFAULT_MODEL)
-    hub = Hub(ROOT, orchestrator.AGENTS, orchestrator.run_agent, model, mode)
+    memory = review_memory.Memory.from_env() if mode == "local" else None
+    hub = Hub(ROOT, orchestrator.AGENTS, orchestrator.run_agent, model, mode, memory=memory)
     origins = frozenset(o.strip().rstrip("/") for o in os.getenv("HORIZON_ALLOWED_ORIGINS", "").split(",")
                         if o.strip())
     server = make_server(hub, args.host, args.port, Path(args.static), origins)

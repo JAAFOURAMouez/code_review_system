@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # pylint: disable=wrong-import-position
 from agents import flow, tools  # noqa: E402
-from agents.common import lint_section, load_lint, run_agent_cli  # noqa: E402
+from agents.common import history_text, lint_section, load_lint, run_agent_cli  # noqa: E402
 from agents.hf_client import LLMError, ToolsUnsupported, generate_json, run_tool_loop  # noqa: E402
 from agents.schema import normalize_code  # noqa: E402
 
@@ -208,7 +208,7 @@ How to work:
   submission that does not compile, removes a public name or has more findings than the
   original is refused with the reason.
 
-{shared_tests}{lint_section(findings)}
+{shared_tests}{history_text("code_correction")}{lint_section(findings)}
 
 Original code:
 ```python
@@ -270,7 +270,8 @@ def correct_code(code: str, file_path: str = "module.py") -> Dict[str, Any]:
             result = best["args"]
     if result is None:
         result = generate_json(
-            prompt.split("How to work:")[0] + lint_section(findings) + "\n\nOriginal code:\n"
+            prompt.split("How to work:")[0] + history_text("code_correction")
+            + lint_section(findings) + "\n\nOriginal code:\n"
             + f"```python\n{code}\n```\n",
             SUBMIT_SCHEMA, name="correction", system=SYSTEM, max_tokens=4000, temperature=0.1)
 

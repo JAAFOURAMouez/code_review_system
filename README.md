@@ -60,6 +60,7 @@ This system consists of five specialized agents that work together to analyze co
 - `agents/code_correction_agent.py` - LLM-powered code correction agent, checks its candidates with the tools
 - `agents/tools.py` - Tools for the LLM agents and the MCP server (linters, syntax check, test runner)
 - `agents/flow.py` - Agent dependencies (`depends_on`) and the file agents use to hand results to each other
+- `agents/memory.py` - Memory between reviews (SQLite): findings, tests that passed, outcomes, human verdicts
 - `agents/hf_client.py` - LLM client: structured JSON output and the function-calling loop
 - `orchestrator.py` - Runs static analysis, then the LLM agents in parallel, and aggregates results
 - `mcp_server.py` - MCP server exposing the tools
@@ -187,7 +188,21 @@ agent: static_analysis
    `verification.tests.reason` says why. Per-test outcomes need pytest; without it only "all
    passed before, not now" is detected. Re-running the correction agent alone in the dashboard
    reuses the generator's stored result.
-5. **Structured outputs.** Every LLM answer is JSON validated against a schema
+5. **Memory between reviews.** After each review of a file the orchestrator stores in
+   `.review_memory/memory.sqlite3` (ignored by git) the linter findings as fingerprints (tool,
+   code, symbol, message with its numbers removed, never the line, so moving code does not make a
+   finding look new), a hash of the file, the tests that passed, the outcome of the correction and
+   a person's verdicts (`Memory.set_verdict`). On the next review of the same file the command
+   line prints what changed ("3 new, 5 fixed, 2 still there") and the improvement, test and
+   correction agents get a short history in their prompt (`CODE_REVIEW_HISTORY`): findings that
+   persist get priority, fixed ones are not suggested again, the test generator starts from the
+   earlier passing tests, the correction agent knows what it left unfixed last time. The history is
+   data from earlier runs, never instructions, and is capped in size. Memory is best effort: if
+   the database cannot be read or written the review goes on without it. It holds code and
+   findings of your files; `python orchestrator.py --forget [file]` deletes the memory of a file
+   (or of all of them). `run_pipeline` uses no memory unless given a `Memory`, which the command
+   line does.
+6. **Structured outputs.** Every LLM answer is JSON validated against a schema
    (`response_format=json_schema`, falling back to `json_object` and then to plain text for
    providers that do not support it; one repair round trip when the JSON does not match).
 
@@ -224,6 +239,8 @@ Tools: `run_pylint`, `run_flake8`, `run_bandit`, `run_radon`, `check_syntax`, `r
 | `AGENT_MAX_STEPS` | `8` | Model turns in a tool loop |
 | `TEST_TIMEOUT` | `60` | Seconds for one test run |
 | `CODE_REVIEW_ALLOW_EXEC` | `1` | `0` disables `run_tests` |
+| `CODE_REVIEW_MEMORY_DB` | `.review_memory/memory.sqlite3` | Memory database; `0` turns memory off |
+| `CODE_REVIEW_MEMORY_KEEP` | `20` | Reviews kept per file |
 
 ### Evaluation
 

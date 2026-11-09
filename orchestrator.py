@@ -16,6 +16,11 @@ Pipeline for one file:
 
 Each agent is a separate process that prints one JSON object. Results are returned in the
 order of ``AGENTS``.
+
+With a ``Memory`` (see ``agents/memory.py``) the pipeline also remembers each file between
+reviews: after static analysis it looks up the file's earlier reviews and hands the agents a
+short history (``CODE_REVIEW_HISTORY``), and it stores the finished review. The command line
+uses the memory of ``.review_memory/``; ``run_pipeline`` uses none unless given one.
 """
 
 import json
@@ -29,6 +34,7 @@ from typing import Any, Callable, Dict, List, Optional
 from dotenv import load_dotenv
 
 from agents import flow
+from agents import memory as review_memory
 
 load_dotenv()  # Load environment variables from .env file
 
@@ -190,10 +196,14 @@ def run_pipeline(
     runner: Callable[..., Dict[str, Any]] = run_agent,
     on_result: Optional[Callable[[Dict[str, Any], Dict[str, Any], float], None]] = None,
     max_parallel: Optional[int] = None,
+    memory: Optional[review_memory.Memory] = None,
+    on_history: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> List[Dict[str, Any]]:
     """Run static analysis, then the LLM agents in parallel (an agent with ``depends_on`` starts
     once the agents it names have finished and receives their results). Returns results in
-    agent order. ``on_result(agent, result, seconds)`` is called as each agent finishes."""
+    agent order. ``on_result(agent, result, seconds)`` is called as each agent finishes.
+    With a ``memory`` the agents also get the history of earlier reviews of the file
+    (``on_history(history)`` is called with it) and this review is stored when it is done."""
     agents = AGENTS if agents is None else agents
     max_parallel = max_parallel or int(os.getenv("LLM_MAX_PARALLEL", "5"))
     results: Dict[int, Dict[str, Any]] = {}
@@ -215,6 +225,12 @@ def run_pipeline(
     static = next((results[i] for i in first if agents[i]["name"] == "static_analysis"), None)
     lint_path = write_lint_file(static)
     lint_env = env_with_lint(env, lint_path)
+    context = review_memory.review_context(memory, file_path, static)
+    history = memory.recall(context["key"], context["hash"], context["findings"]) if context else None
+    if history and on_history:
+        on_history(history)
+    history_path = review_memory.write_history_file(history)
+    lint_env = review_memory.env_with_history(lint_env, history_path)
 
     def with_dependencies(i: int) -> None:
         shared_path = None
@@ -232,7 +248,11 @@ def run_pipeline(
         flow.schedule(agents, rest, with_dependencies, max_parallel)
     finally:
         _remove(lint_path)
-    return [results[i] for i in range(len(agents))]
+        _remove(history_path)
+    ordered = [results[i] for i in range(len(agents))]
+    if context:
+        memory.record(context["key"], context["hash"], context["findings"], ordered)
+    return ordered
 
 
 def _remove(path: Optional[str]) -> None:
@@ -281,10 +301,17 @@ def _print_result(result: Dict[str, Any]) -> None:
 
 
 def main():
-    """Command line: python orchestrator.py <file_path>"""
+    """Command line: python orchestrator.py <file_path>
+    ``python orchestrator.py --forget [file_path]`` deletes the memory of a file (or of all)."""
     if len(sys.argv) < 2:
         print("Usage: python orchestrator.py <file_path>")
         sys.exit(1)
+
+    memory = review_memory.Memory.from_env()
+    if sys.argv[1] == "--forget":
+        target = review_memory.file_key(sys.argv[2]) if len(sys.argv) > 2 else None
+        print(f"Forgot {memory.forget(target)} review(s).")
+        return
 
     file_path = sys.argv[1]
     if not os.path.isfile(file_path):
@@ -301,7 +328,8 @@ def main():
         print(f"  {agent['description']}: {status} ({seconds:.1f}s)", flush=True)
 
     started = time.monotonic()
-    results = run_pipeline(file_path, on_result=report)
+    results = run_pipeline(file_path, on_result=report, memory=memory,
+                           on_history=lambda h: print(review_memory.describe(h), flush=True))
     print(f"\nTotal time: {time.monotonic() - started:.1f}s")
 
     print("\n" + "=" * 60)

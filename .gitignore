@@ -100,3 +100,6 @@ __pycache__/
 # Evaluation
 eval/.cache/
 eval/results/
+
+# Review memory (holds code and findings from reviewed files)
+.review_memory/

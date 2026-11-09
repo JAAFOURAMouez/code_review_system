@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # pylint: disable=wrong-import-position
 from agents import hf_client  # noqa: E402
-from agents import tools  # noqa: E402
+from agents import memory, tools  # noqa: E402
 
 LINT_ENV = "CODE_REVIEW_LINT_RESULTS"
 
@@ -56,6 +56,12 @@ def lint_section(findings: List[Dict[str, Any]], limit: int = 60) -> str:
     """The prompt section with the linter findings."""
     return ("Findings from pylint, flake8, bandit and radon (verified tool output):\n"
             + tools.format_findings(findings, limit))
+
+
+def history_text(agent: str) -> str:
+    """The prompt section with what earlier reviews of this file found ("" for a first review,
+    when run on its own, or when ``agent`` does not use it). See ``agents/memory.py``."""
+    return memory.history_section(memory.load_history(), agent)
 
 
 def run_agent_cli(agent: str, analyze: Callable[[str, str], Dict[str, Any]]) -> None:

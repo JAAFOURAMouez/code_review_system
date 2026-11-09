@@ -15,7 +15,7 @@ from typing import Any, Dict
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # pylint: disable=wrong-import-position
-from agents.common import lint_section, load_lint, numbered, run_agent_cli  # noqa: E402
+from agents.common import history_text, lint_section, load_lint, numbered, run_agent_cli  # noqa: E402
 from agents.hf_client import generate_json  # noqa: E402
 
 CATEGORIES = ["bug", "security", "performance", "readability", "maintainability", "style",
@@ -64,7 +64,7 @@ bugs, security problems, refactorings, performance, readability and best practic
 - Use the line numbers shown on the left; `line` is null for file-wide suggestions.
 - Order from most to least important.
 
-{lint_section(findings)}
+{history_text("improvement_suggestion")}{lint_section(findings)}
 
 Code (line numbers on the left are not part of the code):
 {numbered(code)}
