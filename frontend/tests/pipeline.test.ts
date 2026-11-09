@@ -150,3 +150,31 @@ test('formatting', () => {
   assert.ok(includesText(['Static analysis', 'B105'], 'b105 static'))
   assert.ok(!includesText(['x'], 'y'))
 })
+
+test('the planner runs in the first stage; a dependent agent follows its dependency', () => {
+  const { first, parallel, links } = stages([
+    agent('static_analysis', false),
+    { ...agent('planner', true), planner: true },
+    agent('tests', true),
+    agent('docs', true),
+    { ...agent('fix', true), dependsOn: ['tests'] },
+  ])
+  assert.deepEqual(
+    first.map((a) => a.id),
+    ['static_analysis', 'planner'],
+  )
+  assert.deepEqual(
+    parallel.map((a) => a.id),
+    ['tests', 'fix', 'docs'],
+  )
+  assert.deepEqual(links, [['tests', 'fix']])
+})
+
+test('a dependency on an agent that is not there is ignored and nothing is dropped', () => {
+  const { parallel, links } = stages([{ ...agent('fix', true), dependsOn: ['gone'] }, agent('a', true)])
+  assert.deepEqual(
+    parallel.map((a) => a.id),
+    ['fix', 'a'],
+  )
+  assert.deepEqual(links, [])
+})

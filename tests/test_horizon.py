@@ -21,7 +21,12 @@ import server  # noqa: E402
 AGENTS = [{"name": n, "script": f"agents/{n}.py", "description": ad.info(n)["name"] + " Agent"}
           for n in ad.AGENT_INFO]
 
+ALL_RUN = {"decisions": [{"agent": n, "run": True, "reason": "Worth running."} for n in (
+    "code_understanding", "improvement_suggestion", "documentation_agent", "test_generator",
+    "code_correction")]}
+
 GOOD = {
+    "planner": ALL_RUN,
     "static_analysis": {"findings": [{"type": "pylint", "line": 3, "message": "x", "severity": "warning"},
                                      {"type": "flake8", "line": 1, "message": "y", "severity": "warning"}]},
     "code_understanding": {"explanation": "Adds numbers.", "complex_sections": [{"line": 2, "reason": "r"}]},
@@ -107,7 +112,7 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(agents["code_understanding"]["budgetMs"], ad.AGENT_BUDGET_MS)
         run = ws["runs"][0]
         self.assertEqual((run["outcome"], run["agentsOk"], run["agentsTotal"], run["lines"]),
-                         ("succeeded", 6, 6, 9))
+                         ("succeeded", 7, 7, 9))
 
     def test_outcomes(self):
         run = make_run({n: "failed" for n in self.names})
@@ -145,7 +150,7 @@ class ServerTests(unittest.TestCase):
         def run_agent(agent, file_path, env=None):
             if self.gate:
                 self.gate.wait(5)
-            if self.barrier and agent["name"] != "static_analysis":
+            if self.barrier and agent["name"] not in ("static_analysis", "planner"):
                 self.barrier.wait(5)  # breaks (and the agent fails) unless all 5 run at once
             if agent["name"] in self.fail_agents:
                 return {"error": True, "note": "API call failed", "file": file_path}

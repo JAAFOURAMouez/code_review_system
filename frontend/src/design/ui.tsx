@@ -77,6 +77,7 @@ const KIND_COLOR: Record<StatusKind, string> = {
   running: 'var(--st-running)',
   ok: 'var(--st-completed)',
   failed: 'var(--st-failed)',
+  skipped: 'var(--st-idle)',
   partial: 'var(--st-blocked)',
 }
 
@@ -97,6 +98,14 @@ export function Glyph({ kind, size = 14 }: { kind: StatusKind; size?: number }) 
           strokeWidth="1.6"
           strokeDasharray="2.4 2.2"
         />
+      )
+      break
+    case 'skipped':
+      body = (
+        <>
+          <circle cx="7" cy="7" r="5" fill="none" stroke={c} strokeWidth="1.6" />
+          <path d="M4.6 7h4.8" stroke={c} strokeWidth="1.6" strokeLinecap="round" />
+        </>
       )
       break
     case 'running':
@@ -163,6 +172,7 @@ export const AGENT_STATUS_LABEL: Record<AgentStatus, string> = {
   running: 'Running',
   ok: 'Done',
   failed: 'Failed',
+  skipped: 'Skipped',
 }
 
 export const OUTCOME_LABEL: Record<Outcome, string> = {

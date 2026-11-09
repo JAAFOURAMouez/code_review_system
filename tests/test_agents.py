@@ -387,7 +387,7 @@ class PipelineTests(unittest.TestCase):
         results = orchestrator.run_pipeline("x.py", env={"PATH": "/bin"}, runner=runner)
         elapsed = time.monotonic() - started
         self.assertEqual([r["agent"] for r in results], [a["name"] for a in orchestrator.AGENTS])
-        self.assertEqual(len(seen), 5)
+        self.assertEqual(len(seen), 6)  # the planner and the five agents it lets through
         self.assertTrue(all(f == [{"type": "bandit", "code": "B105"}] for f, _ in seen.values()))
         self.assertLess(elapsed, 1.5)  # 5 x 0.4 s would be 2 s one after another
 

@@ -169,7 +169,8 @@
   border-color: rgba(240, 112, 106, 0.4);
   background: var(--st-failed-wash);
 }
-.badge--pending {
+.badge--pending,
+.badge--skipped {
   color: var(--text-2);
 }
 .chip {

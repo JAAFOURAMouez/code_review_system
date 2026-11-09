@@ -1,7 +1,7 @@
 // The data the backend (server.py, horizon_adapter.py) sends. The backend owns all state;
 // the front end only shows it and sends the two human actions (approve, re-run).
 
-export type AgentStatus = 'pending' | 'running' | 'ok' | 'failed'
+export type AgentStatus = 'pending' | 'running' | 'ok' | 'failed' | 'skipped'
 export type Outcome = 'in_progress' | 'succeeded' | 'partial' | 'failed'
 
 /** One agent of the pipeline. */
@@ -17,6 +17,10 @@ export interface AgentInfo {
   model: string | null
   /** Timeout of the agent, in ms. */
   budgetMs: number
+  /** Decides which agents run (the planner). */
+  planner?: boolean
+  /** Agents whose result this one waits for and uses (code correction waits for the tests). */
+  dependsOn?: string[]
 }
 
 /** One agent in the latest review. */
@@ -30,6 +34,8 @@ export interface AgentRun {
   endedAt: number | null
   durationMs: number | null
   problem: string | null
+  /** Why the planner skipped this agent (status 'skipped'). */
+  reason?: string | null
   /** The agent's JSON output (see the result types below). */
   result: Record<string, unknown> | null
 }
@@ -45,6 +51,8 @@ export interface RunSummary {
   outcome: Outcome
   agentsOk: number
   agentsFailed: number
+  /** Agents the planner left out. */
+  agentsSkipped?: number
   agentsTotal: number
   approved: number
 }
@@ -107,6 +115,18 @@ export interface Usage {
 export interface StaticResult {
   findings: Finding[]
   tools?: Record<string, string>
+}
+
+export interface PlanDecision {
+  agent: string
+  run: boolean
+  reason: string
+}
+
+export interface PlannerResult {
+  decisions: PlanDecision[]
+  source?: string
+  summary?: string
 }
 
 export interface UnderstandingResult {

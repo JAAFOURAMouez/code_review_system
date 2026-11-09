@@ -40,7 +40,7 @@ sys.path.insert(0, str(HERE))
 # pylint: disable=wrong-import-position
 import horizon_adapter as ad  # noqa: E402
 import orchestrator  # noqa: E402
-from agents import schema  # noqa: E402
+from agents import flow, schema  # noqa: E402
 from agents.code_correction_agent import SUBMIT_SCHEMA as CORRECTION_SCHEMA  # noqa: E402
 from agents.code_understanding import SCHEMA as UNDERSTANDING_SCHEMA  # noqa: E402
 from agents.documentation_agent import SCHEMA as DOC_SCHEMA  # noqa: E402
@@ -106,10 +106,15 @@ def schema_problems(name: str, result: Dict[str, Any]) -> List[str]:
     return schema.validate(subset, sch)
 
 
+# The evaluation measures every agent on every file, so it runs the pipeline without the
+# planner (which would skip agents it judges useless on a file).
+EVAL_AGENTS = [a for a in orchestrator.AGENTS if not flow.is_planner(a)]
+
+
 def evaluate_file(path: Path, repo: str, repo_dir: Path, env: Dict[str, str]) -> Dict[str, Any]:
     """Run the pipeline on one file and measure its outputs."""
     started = time.monotonic()
-    results = orchestrator.run_pipeline(str(path), env=env)
+    results = orchestrator.run_pipeline(str(path), env=env, agents=EVAL_AGENTS)
     wall = time.monotonic() - started
     agents: Dict[str, Any] = {}
     for r in results:
@@ -151,7 +156,7 @@ def pct(part: int, whole: int) -> str:
 def summarize(files: List[Dict[str, Any]], meta: Dict[str, Any]) -> str:
     """Markdown summary."""
     n = len(files)
-    names = [a["name"] for a in orchestrator.AGENTS]
+    names = [a["name"] for a in EVAL_AGENTS]
     lines = [f"# Evaluation: {meta['label']}", "",
              f"- Model: `{meta['model']}`"
              + (" (scripted fake: plumbing check only, quality numbers are meaningless)"

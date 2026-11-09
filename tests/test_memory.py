@@ -342,7 +342,7 @@ class PipelineMemoryTests(TempMemoryCase):
         orchestrator.run_pipeline(self.file, runner=self.runner, memory=self.memory,
                                   on_history=seen.append)
         self.assertEqual(len(seen), 1)
-        self.assertEqual(len(self.histories), 5)  # every agent except static analysis
+        self.assertEqual(len(self.histories), 6)  # every agent except static analysis
         for _, history, _ in self.histories:
             self.assertEqual([e["code"] for e in history["changes"]["new"]], ["C"])
             self.assertEqual([e["code"] for e in history["changes"]["resolved"]], ["A"])
@@ -407,6 +407,9 @@ class ServerMemoryTests(TempMemoryCase):
                 with open(path, encoding="utf-8") as f:
                     self.histories.append((name, json.load(f)))
             return {
+                "planner": {"decisions": [{"agent": a, "run": True, "reason": "yes"} for a in (
+                    "code_understanding", "improvement_suggestion", "documentation_agent",
+                    "test_generator", "code_correction")]},
                 "code_understanding": {"explanation": "It sets x."},
                 "improvement_suggestion": {"improvements": [{"line": 1, "description": "Rename."}]},
                 "test_generator": {"tests": "def test_x():\n    assert True\n", "module": "a",

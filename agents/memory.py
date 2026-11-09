@@ -162,7 +162,8 @@ def summarize(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """What is worth remembering from the agents' results of one review."""
     by_agent = {r.get("agent"): r for r in results if isinstance(r, dict) and r.get("agent")}
     summary: Dict[str, Any] = {
-        "agents": {name: ("failed" if r.get("error") else "ok") for name, r in by_agent.items()}}
+        "agents": {name: ("skipped" if r.get("skipped") else "failed" if r.get("error") else "ok")
+                   for name, r in by_agent.items()}}
     gen = by_agent.get("test_generator") or {}
     verification = gen.get("verification") or {}
     if not gen.get("error") and gen.get("tests") and verification.get("ran") \

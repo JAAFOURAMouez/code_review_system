@@ -46,9 +46,34 @@ export function countByTool(findings: Finding[]): { tool: string; count: number 
   return [...counts].map(([tool, count]) => ({ tool, count }))
 }
 
-/** Static analysis first, then the model-based agents, keeping the backend's order. */
-export function stages(agents: AgentInfo[]): { first: AgentInfo[]; parallel: AgentInfo[] } {
-  return { first: agents.filter((a) => !a.llm), parallel: agents.filter((a) => a.llm) }
+/**
+ * The pipeline in three steps: the agents that run first (static analysis, then the planner),
+ * the model-based agents that run in parallel, in the backend's order but with an agent right
+ * after the one it depends on (code correction after the test generator), and the
+ * dependencies between those agents as [from, to] pairs.
+ */
+export function stages(agents: AgentInfo[]): {
+  first: AgentInfo[]
+  parallel: AgentInfo[]
+  links: [string, string][]
+} {
+  const first = agents.filter((a) => !a.llm || a.planner)
+  const rest = agents.filter((a) => a.llm && !a.planner)
+  const ids = new Set(rest.map((a) => a.id))
+  const dep = (a: AgentInfo) => (a.dependsOn ?? []).find((d) => ids.has(d))
+  const roots = rest.filter((a) => !dep(a))
+  const parallel: AgentInfo[] = []
+  for (const a of roots) {
+    parallel.push(a)
+    parallel.push(...rest.filter((b) => dep(b) === a.id))
+  }
+  // A dependency on an agent that is not in the list is ignored; nothing is dropped.
+  for (const a of rest) if (!parallel.includes(a)) parallel.push(a)
+  const links: [string, string][] = rest.flatMap((a) => {
+    const d = dep(a)
+    return d ? [[d, a.id] as [string, string]] : []
+  })
+  return { first, parallel, links }
 }
 
 export interface TimelineBar {

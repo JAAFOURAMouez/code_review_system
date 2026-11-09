@@ -7,7 +7,10 @@ Pipeline for one file:
 1. The static analysis agent runs first (pylint, flake8, bandit, radon).
 2. Its findings are written to a temporary JSON file whose path is given to the other agents
    in ``CODE_REVIEW_LINT_RESULTS``, so every LLM agent works from verified tool output.
-3. The LLM agents run in parallel (``LLM_MAX_PARALLEL``, default 5), except that an agent
+3. The planner agent looks at the file and the findings and decides which of the other agents
+   are worth running (``agents/planner.py``). An agent it skips gets a ``{"skipped": true,
+   "reason": ...}`` result; if the planner fails, every agent runs.
+4. The selected LLM agents run in parallel (``LLM_MAX_PARALLEL``, default 5), except that an agent
    with ``depends_on`` waits for the agents it names. The correction agent waits for the test
    generator: the tests are handed over in a file named in ``CODE_REVIEW_SHARED`` and the
    correction is refused when it breaks a test that passed on the original file. The test
@@ -55,6 +58,13 @@ AGENTS = [
         "script": "agents/static_analysis.py",
         "description": "Static Analysis Agent",
         "needs_lint": False,
+    },
+    {
+        "name": "planner",
+        "script": "agents/planner.py",
+        "description": "Planner Agent",
+        "needs_lint": True,
+        "planner": True,  # decides which of the agents below run (see flow.apply_plan)
     },
     {
         "name": "code_understanding",
@@ -219,7 +229,8 @@ def run_pipeline(
             on_result(agents[index], result, time.monotonic() - started)
 
     first = [i for i, a in enumerate(agents) if not needs_lint(a)]
-    rest = [i for i, a in enumerate(agents) if needs_lint(a)]
+    planners = [i for i, a in enumerate(agents) if needs_lint(a) and flow.is_planner(a)]
+    rest = [i for i, a in enumerate(agents) if needs_lint(a) and i not in planners]
     for i in first:
         one(i, env)
     static = next((results[i] for i in first if agents[i]["name"] == "static_analysis"), None)
@@ -245,7 +256,15 @@ def run_pipeline(
             _remove(shared_path)
 
     try:
-        flow.schedule(agents, rest, with_dependencies, max_parallel)
+        # The planner runs before the others and chooses which of them to run.
+        for i in planners:
+            one(i, lint_env)
+        to_run, skipped = flow.apply_plan(agents, rest, results[planners[0]] if planners else None)
+        for i, reason in skipped.items():
+            results[i] = flow.skipped_result(agents[i], reason, file_path)
+            if on_result:
+                on_result(agents[i], results[i], 0.0)
+        flow.schedule(agents, to_run, with_dependencies, max_parallel)
     finally:
         _remove(lint_path)
         _remove(history_path)
@@ -320,12 +339,17 @@ def main():
 
     print(f"Running Code Review & Improvement System on {file_path}")
     print("=" * 60)
-    print("Static analysis first, then the LLM agents in parallel "
+    print("Static analysis first, then the planner chooses the agents, which run in parallel "
           "(the correction waits for the generated tests)...")
 
     def report(agent, result, seconds):
+        if result.get("skipped"):
+            print(f"  {agent['description']}: Skipped ({result.get('reason')})", flush=True)
+            return
         status = "Completed with errors" if result.get("error") else "Completed successfully"
         print(f"  {agent['description']}: {status} ({seconds:.1f}s)", flush=True)
+        if flow.is_planner(agent) and result.get("summary"):
+            print(f"    Plan: {result['summary']}", flush=True)
 
     started = time.monotonic()
     results = run_pipeline(file_path, on_result=report, memory=memory,

@@ -365,15 +365,26 @@ class ReviewService:
             # of step 1. An agent with ``depends_on`` (the correction agent) starts once the
             # agents it names have finished and also receives their results.
             first = [i for i in indices if not needs_lint(self.agents[i])]
-            rest = [i for i in indices if needs_lint(self.agents[i])]
+            later = [i for i in indices if needs_lint(self.agents[i])]
+            planners = [i for i in later if flow.is_planner(self.agents[i])]
+            rest = [i for i in later if i not in planners]
             for i in first:
                 self._run_one(run, i, token, model)
             full = any(self.agents[i]["name"] == "static_analysis" for i in first)
-            if rest:
+            if later:
                 with self.lock:
                     lint_path = write_lint_file(run)
                     history = self._history(run, full)
                 history_path = review_memory.write_history_file(history)
+                # The planner runs before the others and chooses which of them run; when it
+                # fails (or is not part of this run, as in a re-run of one agent) they all do.
+                for i in planners:
+                    self._run_one(run, i, token, model, lint_path, None, history_path)
+                with self.lock:
+                    plan = self._result_of(run, self.agents[planners[0]]["name"]) if planners else None
+                    rest, skipped = flow.apply_plan(self.agents, rest, plan)
+                    for i, reason in skipped.items():
+                        self._skip(run, i, reason)
 
                 def worker(i: int) -> None:
                     shared_path: str | None = None
@@ -390,7 +401,7 @@ class ReviewService:
             remove_file(lint_path)
             remove_file(history_path)
             with self.lock:
-                if all(r["status"] in ("ok", "failed") for r in run["agents"].values()):
+                if all(r["status"] in ("ok", "failed", "skipped") for r in run["agents"].values()):
                     run["endedAt"] = self.clock()
                     self._remember(run, any(self.agents[i]["name"] == "static_analysis"
                                             for i in indices))
@@ -407,6 +418,20 @@ class ReviewService:
         """Where the reviewed file is on disk (a local run stores its path relative to the
         project folder)."""
         return str(self.root / (run.get("path") or run["file"]))
+
+    def _result_of(self, run: dict[str, Any], name: str) -> dict[str, Any] | None:
+        """The result of an agent that finished successfully in this run."""
+        rec = run["agents"].get(name) or {}
+        return rec.get("result") if rec.get("status") == "ok" else None
+
+    def _skip(self, run: dict[str, Any], index: int, reason: str) -> None:
+        """Record that the planner skipped an agent. Caller holds the lock."""
+        name = self.agents[index]["name"]
+        run["agents"][name].update(status="skipped", startedAt=None, endedAt=None, problem=None,
+                                   result=None, approved=False, reason=reason)
+        self._event(run, name, "output", "info", "Skipped", reason,
+                    taskId=ad.task_id(run["id"], index))
+        self._bump()
 
     def _static_result(self, run: dict[str, Any]) -> dict[str, Any] | None:
         rec = run["agents"].get("static_analysis") or {}
@@ -451,7 +476,7 @@ class ReviewService:
         with self.lock:
             rec = run["agents"][name]
             rec.update(status="running", startedAt=self.clock(), endedAt=None, problem=None,
-                       result=None, approved=False,
+                       result=None, approved=False, reason=None,
                        attempts=rec.get("attempts", 0) + 1)
             self._event(run, name, "start", "info", "Started", None, taskId=tid)
             self._bump()
@@ -523,7 +548,7 @@ class ReviewService:
             desc = self.agents[idx].get("description", name)
             self._event(run, "human", "human", "success", f"Approved the result of {desc}",
                         taskId=ad.task_id(run["id"], idx))
-            if all(r.get("approved") for r in run["agents"].values()):
+            if all(r.get("approved") for r in run["agents"].values() if r["status"] != "skipped"):
                 self._event(run, "human", "human", "success", "Approved every result")
             self._bump()
             return {}
@@ -535,7 +560,7 @@ class ReviewService:
             if err or run is None:
                 return {"error": err}
             rec = run["agents"][name]
-            if rec["status"] not in ("ok", "failed"):
+            if rec["status"] not in ("ok", "failed", "skipped"):
                 return {"error": "This agent has not finished yet."}
             model = run.get("model") or self.model
             if self.public:

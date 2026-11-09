@@ -631,3 +631,18 @@
     display: none;
   }
 }
+
+/* planner, memory and dashed links in the landing picture */
+.pipeart__planner {
+  fill: var(--bg-1);
+  stroke: rgba(76, 201, 224, 0.55);
+  stroke-width: 1.5;
+}
+.pipeart__memory {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-dasharray: 4 4;
+}
+.pipeart__link--dashed {
+  stroke-dasharray: 3 4;
+}

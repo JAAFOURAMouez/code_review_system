@@ -22,6 +22,7 @@ function statusLine(a: AgentRun | undefined, now: number): string {
     return a.startedAt ? `Running, ${fmtDuration(now - a.startedAt)}` : 'Running'
   if (a.status === 'ok') return `Done in ${fmtDuration(a.durationMs)}`
   if (a.status === 'failed') return 'Failed'
+  if (a.status === 'skipped') return 'Skipped by the planner'
   return 'Waiting'
 }
 
@@ -32,7 +33,9 @@ function edgeState(status: AgentStatus | undefined): string {
       ? 'done'
       : status === 'failed'
         ? 'failed'
-        : 'idle'
+        : status === 'skipped'
+          ? 'skipped'
+          : 'idle'
 }
 
 /** The tool a tool-loop agent calls, as shown next to it. */
@@ -72,6 +75,7 @@ function AgentNode({
         }
       }}
     >
+      {a?.status === 'skipped' && a.reason && <title>{`Skipped: ${a.reason}`}</title>}
       <rect x={x} y={y} width={NODE_W} height={NODE_H} rx="8" className="gnode__box" />
       <g transform={`translate(${x + 14} ${y + 14})`}>
         <Glyph kind={a?.status ?? 'pending'} size={15} />
@@ -92,7 +96,8 @@ function AgentNode({
 }
 
 function Graph({ run, agents, now }: { run: CurrentRun; agents: AgentInfo[]; now: number }) {
-  const { first, parallel } = stages(agents)
+  const { first, parallel, links } = stages(agents)
+  const dependent = new Set(links.map(([, to]) => to))
   const H = Math.max(parallel.length, first.length, 1) * (NODE_H + GAP) - GAP
   const midY = H / 2
   const firstTop = midY - (first.length * (NODE_H + GAP) - GAP) / 2
@@ -156,6 +161,7 @@ function Graph({ run, agents, now }: { run: CurrentRun; agents: AgentInfo[]; now
 
       {/* first stage -> parallel agents: the findings fan out */}
       {parallel.map((info, i) => {
+        if (dependent.has(info.id)) return null // linked to its dependency below
         const cy = i * (NODE_H + GAP) + NODE_H / 2
         const x0 = FIRST_X + NODE_W
         const d = `M${x0} ${midY} C ${x0 + 60} ${midY}, ${PAR_X - 60} ${cy}, ${PAR_X - 2} ${cy}`
@@ -167,6 +173,28 @@ function Graph({ run, agents, now }: { run: CurrentRun; agents: AgentInfo[]; now
             className={`gedge gedge--${state}`}
             markerEnd="url(#g-arrow)"
           />
+        )
+      })}
+
+      {/* an agent that uses another agent's result: a short arrow from that agent */}
+      {links.map(([from, to]) => {
+        const a = parallel.findIndex((p) => p.id === from)
+        const b = parallel.findIndex((p) => p.id === to)
+        if (a < 0 || b < 0) return null
+        const x = PAR_X + NODE_W / 2
+        const y0 = a * (NODE_H + GAP) + NODE_H
+        const y1 = b * (NODE_H + GAP)
+        return (
+          <g key={`d-${from}-${to}`}>
+            <path
+              d={`M${x} ${y0} V${y1 - 2}`}
+              className={`gedge gedge--${edgeState(run.agents[to]?.status)}`}
+              markerEnd="url(#g-arrow)"
+            />
+            <text x={x + 10} y={(y0 + y1) / 2 + 3} className="gedge__label">
+              passes its tests
+            </text>
+          </g>
         )
       })}
 
@@ -220,6 +248,7 @@ function Stack({ run, agents, now }: { run: CurrentRun; agents: AgentInfo[]; now
             <span className="agentrow__sub muted">
               {statusLine(a, now)}
               {toolLabel(info) ? `, uses ${toolLabel(info)}` : ''}
+              {a?.status === 'skipped' && a.reason ? `: ${a.reason}` : ''}
             </span>
           </span>
         </button>
@@ -230,7 +259,7 @@ function Stack({ run, agents, now }: { run: CurrentRun; agents: AgentInfo[]; now
     <ol className="stack" aria-label="Pipeline">
       <li className="stack__label">First</li>
       {first.map(row)}
-      <li className="stack__label">Then, at the same time, with its findings</li>
+      <li className="stack__label">Then the planner's choice, at the same time</li>
       {parallel.map(row)}
     </ol>
   )
@@ -262,7 +291,13 @@ function Timeline({ run, agents, now }: { run: CurrentRun; agents: AgentInfo[]; 
                   title={`${info.name}: ${statusLine(a, now)}`}
                 />
               ) : (
-                <span className="tl__none muted">{a ? 'Not started' : 'Not in this review'}</span>
+                <span className="tl__none muted">
+                  {a?.status === 'skipped'
+                    ? `Skipped: ${a.reason ?? 'not needed for this file'}`
+                    : a
+                      ? 'Not started'
+                      : 'Not in this review'}
+                </span>
               )}
             </span>
             <span className="tl__dur mono" role="cell">
@@ -301,6 +336,8 @@ export function Orchestration() {
   }
   const agents = ws.agents.filter((a) => run.agents[a.id])
   const { first, parallel } = stages(agents)
+  const skipped = parallel.filter((p) => run.agents[p.id]?.status === 'skipped').length
+  const plan = run.agents.planner?.result as { summary?: string } | null | undefined
   const peak = peakParallelism(run, now)
   const firstDone = first.every((f) => run.agents[f.id]?.status === 'ok')
   return (
@@ -309,10 +346,11 @@ export function Orchestration() {
         <div>
           <h1>Orchestration</h1>
           <p className="muted">
-            {first.map((f) => f.name).join(', ')} runs first. Its findings go to the{' '}
-            {plural(parallel.length, 'model agent')}, which run at the same time. The agents with
-            tools call them in a loop and finish only when their work passes the checks. Select an
-            agent to open its result.
+            {first.map((f) => f.name).join(' and the ')} run first. The planner then picks, from the
+            file and the findings, which of the {plural(parallel.length, 'model agent')} are worth
+            running; those run at the same time. The code correction waits for the test generator
+            and uses its tests to check the fix. Select an agent to open its result.
+            {skipped > 0 && ` ${plan?.summary ?? `${skipped} skipped.`}`}
           </p>
         </div>
       </header>

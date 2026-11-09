@@ -41,7 +41,7 @@ export function Results() {
           {first.map((a) => (
             <AgentRow key={a.id} info={a} run={run} selected={a.id === selectedId} />
           ))}
-          <p className="agentlist__stage">Then, at the same time</p>
+          <p className="agentlist__stage">Then, the planner's choice</p>
           {parallel.map((a) => (
             <AgentRow key={a.id} info={a} run={run} selected={a.id === selectedId} />
           ))}
@@ -78,7 +78,9 @@ function AgentRow({
             ? summary
             : a.status === 'failed'
               ? 'Failed'
-              : AGENT_STATUS_LABEL[a.status]}
+              : a.status === 'skipped'
+                ? `Skipped${a.reason ? `: ${a.reason}` : ''}`
+                : AGENT_STATUS_LABEL[a.status]}
         </span>
       </span>
       {a.approved && (
@@ -126,7 +128,7 @@ function AgentDetail({ info, run }: { info: AgentInfo; run: CurrentRun }) {
                 Approve
               </button>
             ))}
-          {(a.status === 'ok' || a.status === 'failed') && (
+          {(a.status === 'ok' || a.status === 'failed' || a.status === 'skipped') && (
             <button
               type="button"
               className="btn btn--sm"
@@ -134,7 +136,7 @@ function AgentDetail({ info, run }: { info: AgentInfo; run: CurrentRun }) {
               title={busy ? 'Wait for the review to finish' : undefined}
               onClick={() => void store.rerun(info.id, info.name)}
             >
-              <Icon name="refresh" size={14} /> Re-run
+              <Icon name="refresh" size={14} /> {a.status === 'skipped' ? 'Run anyway' : 'Re-run'}
             </button>
           )}
         </div>
@@ -143,7 +145,7 @@ function AgentDetail({ info, run }: { info: AgentInfo; run: CurrentRun }) {
         {a.status === 'pending' && (
           <p className="muted">
             {info.llm
-              ? 'Waits for static analysis, whose findings it receives.'
+              ? 'Waits for the planner, then receives the findings.'
               : 'Starts in a moment.'}
           </p>
         )}
@@ -156,6 +158,12 @@ function AgentDetail({ info, run }: { info: AgentInfo; run: CurrentRun }) {
                 : 'The result appears here when it is done.'}
             </p>
           </div>
+        )}
+        {a.status === 'skipped' && (
+          <p className="callout">
+            The planner skipped this agent: {a.reason ?? 'it had nothing useful to do on this file'}.
+            You can run it anyway.
+          </p>
         )}
         {a.status === 'failed' && (
           <div className="callout callout--failed" role="alert">

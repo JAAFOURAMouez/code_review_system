@@ -10,6 +10,7 @@ import type {
   CorrectionResult,
   DocumentationResult,
   ImprovementResult,
+  PlannerResult,
   StaticResult,
   TestsResult,
   UnderstandingResult,
@@ -28,6 +29,10 @@ export function resultSummary(id: string, run: AgentRun): string | null {
   const r = run.result
   if (run.status !== 'ok' || !r) return null
   switch (id) {
+    case 'planner': {
+      const d = as<PlannerResult>(r).decisions ?? []
+      return `Runs ${d.filter((x) => x.run).length} of ${d.length}`
+    }
     case 'static_analysis': {
       const issues = (as<StaticResult>(r).findings ?? []).filter(isIssue).length
       return issues ? plural(issues, 'issue') : 'No issues'
@@ -60,6 +65,8 @@ export function AgentResult({ id, run, file }: { id: string; run: AgentRun; file
   const r = run.result
   if (!r) return null
   switch (id) {
+    case 'planner':
+      return <Plan result={as<PlannerResult>(r)} />
     case 'static_analysis':
       return <StaticFindings result={as<StaticResult>(r)} />
     case 'code_understanding':
@@ -74,6 +81,38 @@ export function AgentResult({ id, run, file }: { id: string; run: AgentRun; file
       return <Correction result={as<CorrectionResult>(r)} file={file} />
   }
   return <pre className="result__raw">{JSON.stringify(r, null, 2)}</pre>
+}
+
+// ------------------------------------------------------------------ planner
+
+function Plan({ result }: { result: PlannerResult }) {
+  const decisions = result.decisions ?? []
+  return (
+    <div className="result">
+      {result.summary && <p>{result.summary}</p>}
+      <div className="table-wrap">
+        <table className="table">
+          <thead>
+            <tr>
+              <th scope="col">Agent</th>
+              <th scope="col">Decision</th>
+              <th scope="col">Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {decisions.map((d) => (
+              <tr key={d.agent}>
+                <td className="mono">{d.agent}</td>
+                <td>{d.run ? 'Runs' : 'Skipped'}</td>
+                <td>{d.reason}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {result.source && <p className="muted">Decided by: {result.source}.</p>}
+    </div>
+  )
 }
 
 // ------------------------------------------------------------------ static analysis

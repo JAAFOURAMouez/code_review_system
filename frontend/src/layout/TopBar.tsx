@@ -29,7 +29,7 @@ export function TopBar({ onMenu }: { onMenu: () => void }) {
           <span className="topbar__meta muted">
             {run.outcome === 'in_progress'
               ? `${running} running, ${fmtDuration(now - run.startedAt)} so far`
-              : `${run.agentsOk} of ${run.agentsTotal} agents in ${fmtDuration(run.durationMs)}`}
+              : `${run.agentsOk} of ${run.agentsTotal} agents${run.agentsSkipped ? `, ${run.agentsSkipped} skipped` : ''} in ${fmtDuration(run.durationMs)}`}
           </span>
         </div>
       )}

@@ -23,6 +23,9 @@ AGENT_BUDGET_MS = int(os.getenv("AGENT_TIMEOUT", "120")) * 1000
 # Same value as orchestrator.agent_timeout for agents with "uses_tools" (AGENT_TOOL_TIMEOUT).
 AGENT_TOOL_BUDGET_MS = int(os.getenv("AGENT_TOOL_TIMEOUT", "300")) * 1000
 
+# Agents that wait for another agent's result (same as "depends_on" in orchestrator.AGENTS).
+DEPENDS_ON: dict[str, list[str]] = {"code_correction": ["test_generator"]}
+
 # Display metadata for the agents shipped in agents/. Unknown agents fall back to defaults.
 AGENT_INFO: dict[str, dict[str, Any]] = {
     "static_analysis": {
@@ -30,6 +33,13 @@ AGENT_INFO: dict[str, dict[str, Any]] = {
         "role": "Finds bugs, style, security and complexity issues with linters",
         "tools": ["pylint", "flake8", "bandit", "radon"],
         "llm": False,
+    },
+    "planner": {
+        "name": "Planner",
+        "role": "Chooses which agents are worth running on this file",
+        "tools": [],
+        "llm": False,
+        "planner": True,
     },
     "code_understanding": {
         "name": "Code Understanding",
@@ -69,6 +79,7 @@ AGENT_INFO: dict[str, dict[str, Any]] = {
 # The field each agent must fill for its output to count as "not empty".
 OUTPUT_FIELD = {
     "static_analysis": "findings",
+    "planner": "decisions",
     "code_understanding": "explanation",
     "improvement_suggestion": "improvements",
     "test_generator": "tests",
@@ -188,20 +199,22 @@ def agent_view(run: dict[str, Any], index: int, name: str) -> dict[str, Any]:
     view: dict[str, Any] = {
         "id": name,
         "taskId": task_id(run["id"], index),
-        "status": rec["status"],  # pending | running | ok | failed
+        "status": rec["status"],  # pending | running | ok | failed | skipped
         "attempts": rec.get("attempts", 0),
         "approved": bool(rec.get("approved")),
         "startedAt": started,
         "endedAt": ended,
         "durationMs": (ended - started) if started and ended and ended >= started else None,
         "problem": rec.get("problem"),
+        "reason": rec.get("reason") if rec["status"] == "skipped" else None,
         "result": public_result(rec.get("result")) if rec["status"] in ("ok", "failed") else None,
     }
     return view
 
 
 def run_outcome(run: dict[str, Any]) -> str:
-    recs = list(run["agents"].values())
+    # Agents the planner skipped neither succeeded nor failed: they are left out.
+    recs = [r for r in run["agents"].values() if r["status"] != "skipped"]
     if any(r["status"] in ("pending", "running") for r in recs):
         return "in_progress"
     ok = sum(1 for r in recs if r["status"] == "ok")
@@ -212,7 +225,8 @@ def run_outcome(run: dict[str, Any]) -> str:
 
 def run_summary(run: dict[str, Any], now: int) -> dict[str, Any]:
     """A review in one line: file, model, outcome, timing, agents that succeeded."""
-    recs = list(run["agents"].values())
+    recs = [r for r in run["agents"].values() if r["status"] != "skipped"]
+    skipped = sum(1 for r in run["agents"].values() if r["status"] == "skipped")
     outcome = run_outcome(run)
     ended = run.get("endedAt") if outcome != "in_progress" else None
     return {
@@ -227,6 +241,7 @@ def run_summary(run: dict[str, Any], now: int) -> dict[str, Any]:
         "agentsOk": sum(1 for r in recs if r["status"] == "ok"),
         "agentsFailed": sum(1 for r in recs if r["status"] == "failed"),
         "agentsTotal": len(recs),
+        "agentsSkipped": skipped,
         "approved": sum(1 for r in recs if r.get("approved")),
     }
 
@@ -250,6 +265,8 @@ def build_workspace(
             "tools": meta["tools"],
             "model": model if meta["llm"] else None,
             "budgetMs": budget_ms(name),
+            "planner": name == "planner",
+            "dependsOn": list(DEPENDS_ON.get(name, [])),
         })
     current = None
     if runs:

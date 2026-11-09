@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useApp } from '../state/store.ts'
 import { KeyForm, ReviewForm } from './NewReview.tsx'
 
-/** The five model-based agents, in the order they appear in the pipeline picture. */
+/** The five agents the planner chooses among, in the order they appear in the picture. */
 const AGENTS = [
   { title: 'Explain', note: 'what the code does' },
   { title: 'Improve', note: 'ranked suggestions' },
@@ -11,14 +11,17 @@ const AGENTS = [
   { title: 'Correct', note: 're-checked by the linters', tool: 'linters' },
 ]
 
-const NODE_X = 404
-const NODE_W = 176
+const NODE_X = 412
+const NODE_W = 170
 const NODE_H = 50
-const FAN_X = 334
+const FAN_X = 382
 const FAN_Y = 220
 const centers = AGENTS.map((_, i) => 47 + i * 84)
+/** The corrector waits for the test writer and uses its tests to check the fix. */
+const DEPENDENT = AGENTS.length - 1
 
 /** Code lines drawn in the file card: [indent, width, finding] */
+const CODE_SCALE = 0.7
 const CODE: [number, number, '' | 'warn' | 'error'][] = [
   [0, 70, ''],
   [0, 104, ''],
@@ -40,14 +43,15 @@ function squiggle(x: number, y: number, w: number): string {
   return d
 }
 
-/** The review pipeline: a file, static analysis, then five agents working side by side. */
+/** The review pipeline: a file, static analysis, the planner, then the agents it picks. */
 export function PipelineArt() {
   return (
     <svg className="pipeart" viewBox="0 0 680 440" role="img" aria-labelledby="pipeart-title">
       <title id="pipeart-title">
-        A Python file goes through static analysis; the findings go to five agents that run at the
-        same time. The test writer runs its tests with pytest and the corrector re-checks its fixes
-        with the linters.
+        A Python file goes through static analysis. A planner, which also reads the memory of
+        earlier reviews, picks the agents worth running on it. They run at the same time; the test
+        writer runs its tests with pytest and passes them to the corrector, which re-checks its
+        fixes with the linters.
       </title>
       <defs>
         <marker
@@ -65,23 +69,24 @@ export function PipelineArt() {
 
       {/* the file under review */}
       <g>
-        <rect x="16" y="110" width="156" height="220" rx="8" className="pipeart__file" />
-        <path d="M16 140 H172" className="pipeart__rule" />
+        <rect x="16" y="110" width="118" height="220" rx="8" className="pipeart__file" />
+        <path d="M16 140 H134" className="pipeart__rule" />
         <circle cx="30" cy="125" r="3" className="pipeart__chrome" />
         <circle cx="41" cy="125" r="3" className="pipeart__chrome" />
-        <text x="56" y="129" className="pipeart__mono">
+        <text x="52" y="129" className="pipeart__mono">
           review.py
         </text>
         {CODE.map(([indent, width, finding], i) => {
           if (!width) return null
-          const x = 30 + indent
+          const x = 28 + indent * CODE_SCALE
+          const w = width * CODE_SCALE
           const y = 156 + i * 14
           return (
             <g key={i}>
-              <rect x={x} y={y} width={width} height="5" rx="2.5" className="pipeart__line" />
+              <rect x={x} y={y} width={w} height="5" rx="2.5" className="pipeart__line" />
               {finding && (
                 <path
-                  d={squiggle(x, y + 9, width)}
+                  d={squiggle(x, y + 9, w)}
                   className={`pipeart__squiggle pipeart__squiggle--${finding}`}
                 />
               )}
@@ -90,24 +95,54 @@ export function PipelineArt() {
         })}
       </g>
 
-      <path d="M172 220 H204" className="pipeart__link" markerEnd="url(#pa-arrow)" />
+      <path d="M134 220 H150" className="pipeart__link" markerEnd="url(#pa-arrow)" />
 
       {/* static analysis */}
       <g>
-        <rect x="206" y="180" width="128" height="80" rx="8" className="pipeart__static" />
-        <text x="222" y="208" className="pipeart__title">
+        <rect x="152" y="180" width="112" height="80" rx="8" className="pipeart__static" />
+        <text x="164" y="208" className="pipeart__title">
           Static analysis
         </text>
-        <text x="222" y="228" className="pipeart__note">
+        <text x="164" y="228" className="pipeart__note">
           pylint, flake8,
         </text>
-        <text x="222" y="244" className="pipeart__note">
+        <text x="164" y="244" className="pipeart__note">
           bandit, radon
         </text>
       </g>
 
+      <path d="M264 220 H280" className="pipeart__link" markerEnd="url(#pa-arrow)" />
+
+      {/* the planner chooses which agents are worth running on this file */}
+      <g>
+        <rect x="282" y="180" width="100" height="80" rx="8" className="pipeart__planner" />
+        <text x="294" y="208" className="pipeart__title">
+          Planner
+        </text>
+        <text x="294" y="228" className="pipeart__note">
+          picks the agents
+        </text>
+        <text x="294" y="244" className="pipeart__note">
+          this file needs
+        </text>
+      </g>
+
+      {/* the memory of earlier reviews feeds the planner and the agents */}
+      <g>
+        <rect x="16" y="362" width="366" height="34" rx="8" className="pipeart__memory" />
+        <text x="199" y="384" textAnchor="middle" className="pipeart__note">
+          Memory of earlier reviews
+        </text>
+        <path
+          d="M332 362 V264"
+          className="pipeart__link pipeart__link--dashed"
+          markerEnd="url(#pa-arrow)"
+        />
+      </g>
+
       {/* findings fan out to the agents, which run in parallel */}
       {centers.map((cy, i) => {
+        if (i === DEPENDENT) return null
         const d = `M${FAN_X} ${FAN_Y} C ${FAN_X + 38} ${FAN_Y}, ${NODE_X - 40} ${cy}, ${NODE_X - 2} ${cy}`
         return (
           <g key={i}>
@@ -116,6 +151,20 @@ export function PipelineArt() {
           </g>
         )
       })}
+
+      {/* the tests go to the corrector, which uses them to check its fix */}
+      <path
+        d={`M${NODE_X + NODE_W / 2} ${centers[DEPENDENT - 1] + NODE_H / 2} V${centers[DEPENDENT] - NODE_H / 2 - 2}`}
+        className="pipeart__link"
+        markerEnd="url(#pa-arrow)"
+      />
+      <text
+        x={NODE_X + NODE_W / 2 + 10}
+        y={(centers[DEPENDENT - 1] + centers[DEPENDENT]) / 2 + 4}
+        className="pipeart__note"
+      >
+        passes its tests
+      </text>
 
       {AGENTS.map((a, i) => {
         const cy = centers[i]
@@ -199,15 +248,20 @@ export function FirstRun() {
           <span>Horizon AI</span>
         </div>
         <div className="landing__intro">
-          <h1 id="landing-title">Six agents review your Python code at the same time</h1>
+          <h1 id="landing-title">Agents review your Python code, chosen for each file</h1>
           <p>
-            The linters find the issues first. Five agents then explain the code, suggest
-            improvements, write the documentation, write and run tests, and correct the file.
+            The linters find the issues first. A planner then picks the agents worth running on
+            this file: explain the code, suggest improvements, write the documentation, write and
+            run tests, and correct the file. They run at the same time.
           </p>
         </div>
         <PipelineArt />
         <ul className="landing__facts">
-          <li>A correction that doesn’t compile, or adds issues, is sent back to the agent.</li>
+          <li>
+            The corrector uses the generated tests, and is sent back if its fix doesn’t compile,
+            fails them, or adds issues.
+          </li>
+          <li>Memory of earlier reviews shows what is new, fixed or still open.</li>
           <li>Nothing counts until you have read an agent’s output and approved it.</li>
           {upload ? (
             <li>Your key stays in this browser and is used only for your reviews.</li>

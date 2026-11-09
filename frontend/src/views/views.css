@@ -661,3 +661,24 @@
     grid-template-columns: 110px minmax(0, 1fr) 64px;
   }
 }
+
+/* Agents the planner left out */
+.gnode--skipped .gnode__box {
+  stroke-dasharray: 5 4;
+  opacity: 0.6;
+}
+.gnode--skipped .gnode__name,
+.gnode--skipped .gnode__status {
+  opacity: 0.7;
+}
+.gedge--skipped {
+  stroke-dasharray: 3 5;
+  opacity: 0.45;
+}
+.gedge__label {
+  fill: var(--text-2);
+  font-size: 11px;
+}
+.tl__bar--skipped {
+  display: none;
+}

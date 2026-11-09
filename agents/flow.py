@@ -5,6 +5,9 @@ dashboard server and the agents can all use it).
 * ``schedule`` runs agents in dependency order: an agent that declares ``depends_on`` starts as
   soon as the agents it depends on have finished, while every other agent keeps running in
   parallel.
+* ``apply_plan`` turns the planner's decisions into the agents to run and the agents to skip
+  (with the reason). It fails open: a planner that failed, or an agent it did not mention, never
+  removes an agent from the review.
 * The results one agent hands to another travel in a small JSON file whose path is given in
   ``CODE_REVIEW_SHARED`` (the same mechanism as the linter findings in
   ``CODE_REVIEW_LINT_RESULTS``). Today it carries the tests written by the test generator, which
@@ -15,7 +18,7 @@ import json
 import os
 import tempfile
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 SHARED_ENV = "CODE_REVIEW_SHARED"
 MAX_OUTPUT_CHARS = 2000
@@ -62,6 +65,39 @@ def schedule(agents: Sequence[Dict[str, Any]], indices: Sequence[int],
             for future in finished:
                 done.add(running.pop(future))
                 future.result()
+
+
+def is_planner(agent: Dict[str, Any]) -> bool:
+    """Whether ``agent`` is the planner, which decides which of the others run."""
+    return bool(agent.get("planner"))
+
+
+def apply_plan(agents: Sequence[Dict[str, Any]], indices: Sequence[int],
+               plan: Optional[Dict[str, Any]]) -> Tuple[List[int], Dict[int, str]]:
+    """Split ``indices`` into (to run, skipped with the reason) following the planner's result
+    (``{"decisions": [{"agent", "run", "reason"}]}``). Everything runs when the plan is missing,
+    failed or malformed, and so does any agent the plan does not decide on."""
+    decisions = plan.get("decisions") if isinstance(plan, dict) and not plan.get("error") else None
+    if not isinstance(decisions, list):
+        return list(indices), {}
+    verdicts: Dict[str, Tuple[bool, str]] = {}
+    for d in decisions:
+        if isinstance(d, dict) and isinstance(d.get("agent"), str) and isinstance(d.get("run"), bool):
+            verdicts.setdefault(d["agent"], (d["run"], str(d.get("reason") or "").strip()))
+    run: List[int] = []
+    skipped: Dict[int, str] = {}
+    for i in indices:
+        verdict = verdicts.get(agents[i]["name"])
+        if verdict and not verdict[0]:
+            skipped[i] = verdict[1] or "Skipped by the planner."
+        else:
+            run.append(i)
+    return run, skipped
+
+
+def skipped_result(agent: Dict[str, Any], reason: str, file_path: str) -> Dict[str, Any]:
+    """The result recorded for an agent the planner skipped."""
+    return {"agent": agent["name"], "file": file_path, "skipped": True, "reason": reason}
 
 
 def build_shared(results: Dict[str, Any]) -> Dict[str, Any]:
